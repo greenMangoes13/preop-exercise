@@ -95,6 +95,20 @@ class AnticoagPlan(BaseModel):
     source: Source
 
 
+class UnverifiedFact(BaseModel):
+    """A fact the model reported but grounding could not verify.
+
+    Absence of most facts already fails closed (no consent -> FAIL). Dropping a vital or
+    an anticoagulant mention could instead make a case look safer, so these are kept
+    here and block READY.
+    """
+
+    kind: Literal["bp", "temp", "anticoag"]
+    date: dt.date | None
+    reason: str
+    source: Source
+
+
 class CaseFacts(BaseModel):
     procedure_source: Source
     procedure_date: dt.date | None
@@ -105,6 +119,7 @@ class CaseFacts(BaseModel):
     vitals: list[VitalReading] = Field(default_factory=list)
     anticoag: list[AnticoagEvidence] = Field(default_factory=list)
     anticoag_plans: list[AnticoagPlan] = Field(default_factory=list)
+    unverified: list[UnverifiedFact] = Field(default_factory=list)
     documents_searched: int = 0  # all submission documents, for absence evidence
 
     @property
@@ -342,7 +357,7 @@ def check_labs(facts: CaseFacts) -> list[Check]:
 
 def check_anticoag(facts: CaseFacts) -> list[Check]:
     category: IssueCategory = "ANTICOAGULATION_MANAGEMENT"
-    if not facts.anticoag:
+    if not facts.anticoag and not any(u.kind == "anticoag" for u in facts.unverified):
         return [
             Check(
                 rule="3 Anticoagulation",
@@ -353,6 +368,19 @@ def check_anticoag(facts: CaseFacts) -> list[Check]:
         ]
 
     checks: list[Check] = []
+    unverified = [u for u in facts.unverified if u.kind == "anticoag"]
+    if unverified:
+        # Any unverifiable anticoagulant statement blocks READY, whatever its date.
+        checks.append(
+            Check(
+                rule="3 Anticoagulation: unverified mention",
+                category="MISSING_REQUIRED_DATA",
+                status="UNKNOWN",
+                evidence=f"{len(unverified)} anticoagulant mention(s) could not be verified "
+                "against the document text; status must be confirmed.",
+                sources=[u.source for u in unverified],
+            )
+        )
     for drug in sorted({e.drug for e in facts.anticoag}):
         rule = f"3 Anticoagulation plan: {drug}"
         evidence = [e for e in facts.anticoag if e.drug == drug]
@@ -467,6 +495,35 @@ def _reading_label(r: VitalReading) -> str:
     return f"{when} ({r.source.type or r.source.kind})"
 
 
+def _unverified_reading_check(
+    facts: CaseFacts, kind: Literal["bp", "temp"], latest: VitalReading | None, rule: str
+) -> Check | None:
+    """UNKNOWN if an unverified reading may be the most recent one; else None.
+
+    Document dates have no time, so a same-day unverified reading counts as possibly newer.
+    """
+
+    newer = [
+        u
+        for u in facts.unverified
+        if u.kind == kind and (latest is None or u.date is None or u.date >= latest.date)
+    ]
+    if not newer:
+        return None
+    name = "blood pressure" if kind == "bp" else "temperature"
+    baseline = f"the latest verified reading ({_reading_label(latest)})" if latest else (
+        "any verified reading"
+    )
+    return Check(
+        rule=rule,
+        category="MISSING_REQUIRED_DATA",
+        status="UNKNOWN",
+        evidence=f"{len(newer)} {name} reading(s) could not be verified against the document "
+        f"text and may be newer than {baseline}; most recent value unknown.",
+        sources=[u.source for u in newer],
+    )
+
+
 def check_vitals(facts: CaseFacts) -> list[Check]:
     checks: list[Check] = []
 
@@ -474,7 +531,9 @@ def check_vitals(facts: CaseFacts) -> list[Check]:
         [v for v in facts.vitals if v.kind == "bp" and (v.systolic or v.diastolic)]
     )
     rule = "4.1 Blood pressure"
-    if bp is None:
+    if unverified := _unverified_reading_check(facts, "bp", bp, rule):
+        checks.append(unverified)
+    elif bp is None:
         checks.append(
             Check(
                 rule=rule,
@@ -508,7 +567,9 @@ def check_vitals(facts: CaseFacts) -> list[Check]:
 
     temp = latest_reading([v for v in facts.vitals if v.kind == "temp" and v.temp_f is not None])
     rule = "4.2 Temperature"
-    if temp is None:
+    if unverified := _unverified_reading_check(facts, "temp", temp, rule):
+        checks.append(unverified)
+    elif temp is None:
         checks.append(
             Check(
                 rule=rule,

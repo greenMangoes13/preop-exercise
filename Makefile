@@ -35,6 +35,7 @@ test:
 	uv run \
 		--with 'openai>=2.0.0' \
 		--with 'pydantic>=2.8.0' \
+		--with 'brotli>=1.2' \
 		--with 'pytest>=8.0.0' \
 		python -m pytest tests
 

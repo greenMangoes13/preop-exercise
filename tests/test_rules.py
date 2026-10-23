@@ -18,6 +18,7 @@ from rules import (
     LabRecord,
     Source,
     TriageResult,
+    UnverifiedFact,
     VitalReading,
     evaluate,
 )
@@ -579,6 +580,60 @@ def test_no_vitals_at_all_is_missing_data() -> None:
     assert categories(result) == ["MISSING_REQUIRED_DATA"]
     assert check(result, "4.1").status == "UNKNOWN"
     assert check(result, "4.2").status == "UNKNOWN"
+
+
+# -------------------------
+# Safety net: unverified facts never yield READY
+# -------------------------
+
+
+def unverified(kind: str, days_before: int | None, doc_id: str = "dropped") -> UnverifiedFact:
+    return UnverifiedFact(
+        kind=kind,
+        date=None if days_before is None else d(days_before),
+        reason="values not found in document",
+        source=Source(kind="document", id=doc_id),
+    )
+
+
+@pytest.mark.parametrize("kind", ["bp", "temp"])
+@pytest.mark.parametrize("days_before", [1, 3, None])  # newer, same day, undated
+def test_dropped_vital_newer_than_verified_readings_never_yields_ready(
+    kind: str, days_before: int | None
+) -> None:
+    # Safety property (case_00047): verified readings are normal (3 days out), but a
+    # note reading that couldn't be verified may be the most recent one.
+    result = evaluate(ready_facts(unverified=[unverified(kind, days_before)]))
+
+    assert result.decision == "NEEDS_FOLLOW_UP"
+    assert categories(result) == ["MISSING_REQUIRED_DATA"]
+    vital = check(result, "4.1" if kind == "bp" else "4.2")
+    assert vital.status == "UNKNOWN"
+    assert [s.id for s in vital.sources] == ["dropped"]
+
+
+def test_dropped_vital_older_than_verified_reading_does_not_block() -> None:
+    result = evaluate(ready_facts(unverified=[unverified("bp", 10), unverified("temp", 10)]))
+
+    assert result.decision == "READY"
+
+
+def test_dropped_vital_with_no_verified_reading_is_missing_data() -> None:
+    result = evaluate(ready_facts(vitals=[bp(120, 80)], unverified=[unverified("temp", 20)]))
+
+    assert categories(result) == ["MISSING_REQUIRED_DATA"]
+    assert "could not be verified" in check(result, "4.2").evidence
+
+
+@pytest.mark.parametrize("days_before", [60, 1, None])
+def test_any_dropped_anticoag_mention_blocks_ready_regardless_of_date(
+    days_before: int | None,
+) -> None:
+    result = evaluate(ready_facts(unverified=[unverified("anticoag", days_before)]))
+
+    assert result.decision == "NEEDS_FOLLOW_UP"
+    assert categories(result) == ["MISSING_REQUIRED_DATA"]
+    assert check(result, "3 Anticoagulation: unverified").status == "UNKNOWN"
 
 
 def test_absent_record_evidence_says_what_was_searched() -> None:

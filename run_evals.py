@@ -4,6 +4,7 @@
 # dependencies = [
 #   "openai>=2.0.0",
 #   "pydantic>=2.8.0",
+#   "brotli>=1.2",  # httpx2 decompression; older Brotli lacks output_buffer_limit
 # ]
 # ///
 
