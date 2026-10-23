@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, Field
+
+from triage_types import Decision, IssueCategory, ProcedureRisk
 
 # -------------------------
 # Policy + system prompt
@@ -51,16 +52,6 @@ Final determination
 Output requirements
 - Return exactly one JSON object.
 """.strip()
-
-Decision = Literal["READY", "NEEDS_FOLLOW_UP", "NOT_CLEARED"]
-ProcedureRisk = Literal["LOW", "MODERATE", "HIGH"]
-IssueCategory = Literal[
-    "REQUIRED_DOCUMENTATION",
-    "REQUIRED_TESTING",
-    "ANTICOAGULATION_MANAGEMENT",
-    "ACUTE_SAFETY_EXCLUSION",
-    "MISSING_REQUIRED_DATA",
-]
 
 # -------------------------
 # Schemas
