@@ -1,0 +1,3471 @@
+ ▐▛███▛█   Claude Code v2.1.309
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   ~/Documents/preop-exercise
+
+  Sonnet 5.5 is here, and it's faster and excels at well-scoped tasks. Opus 5.5 is still your default. Switch with /model.
+  1 more notice hidden
+
+❯ Read DESIGN.md, core.py, run_evals.py, and tests/. First confirm we’re on the 
+  emma-solution branch and DESIGN.md is committed. Don’t write code yet.        
+  Summarize the plan back to me in a few bullets, and flag anything in          
+  DESIGN.md that conflicts with the starter code, the eval scoring, or the      
+  existing tests. Then propose a file-by-file build order, starting with        
+  rules.py and its unit tests.                                                  
+
+⏺ I'll start by checking the branch and commit state, then read the files.
+
+  Read 4 files, ran 1 shell command (ctrl+o to expand)
+
+⏺ Now the supporting files, since conflicts likely hide in the Makefile,
+  baseline runner, and data shape.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Now I'll check the data against the schema — specifically, which raw fields
+  PatientSubmission.model_dump() silently drops.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ No fields are dropped by the schema, so that's fine. Next I'll check the
+  labels against DESIGN.md's rule semantics: precedence, missing data, and
+  temperature.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Labels line up with DESIGN.md on precedence and on null procedure fields. A
+  few gaps remain. Last, I'll check anticoagulant cases, labs dated after the
+  procedure, and same-day vital ties.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I've read everything I need. Writing the plan file now.
+
+⏺ Updated plan
+  ⎿  /plan to preview
+  ⎿  User rejected Claude's plan:
+     ╭─────────────────────────────────────────────────────────────────────────╮
+     │ Pre-Op Triage — build plan (from DESIGN.md)                             │
+     │                                                                         │
+     │ Context                                                                 │
+     │                                                                         │
+     │ Branch emma-solution, clean tree; DESIGN.md committed in f83fbeb. Goal: │
+     │ replace the naive one-call                                              │
+     │ triage_submission in core.py with "LLM extracts grounded facts → code   │
+     │ applies Rules 1–4", scored by                                           │
+     │ run_evals.py on decision + exact issue-category set + schema validity   │
+     │ (equal weights).                                                        │
+     │                                                                         │
+     │ Plan summary                                                            │
+     │                                                                         │
+     │ - normalize.py (code): lab-code aliases (LAB-CBC→CBC, BMP≠CMP), drop    │
+     │   entered-in-error, brand→generic anticoag map, antiplatelet exclusion, │
+     │   date parsing, °C→°F.                                                  │
+     │ - extract.py (1 LLM call/case, temperature=0, responses.parse +         │
+     │   Pydantic, reused client, retry/timeout): H&P candidates, consents,    │
+     │   note vitals, anticoag mentions/plans, "not on file" statements, each  │
+     │   with {doc_id, quote}; a code grounding check drops facts whose quote  │
+     │   isn't in that doc.                                                    │
+     │ - rules.py (pure): Rules 1–4 → checks[] (incl. passes) → all issues[] → │
+     │   precedence NOT_CLEARED > NEEDS_FOLLOW_UP > READY; fail closed.        │
+     │ - Explanation is assembled from issues in code; the output gains rule,  │
+     │   sources, and checks.                                                  │
+     │                                                                         │
+     │ Conflicts / gaps found                                                  │
+     │                                                                         │
+     │ 1. The existing tests pin the naive baseline.                           │
+     │    tests/test_triage_submission.py asserts that triage_submission makes │
+     │    exactly one responses.create call with instructions ==               │
+     │    BASELINE_SYSTEM_PROMPT, format name preop_triage_output, strict is   │
+     │    False, the full submission JSON in the prompt, and that invalid      │
+     │    model JSON raises ValidationError. DESIGN changes all of these:      │
+     │    parse, a new prompt and schema, and decisions made in code.          │
+     │    Recommendation: rename the old function to                           │
+     │    baseline_triage_submission, point the 3 existing tests at it         │
+     │    unchanged, and write new tests for the new triage_submission.        │
+     │ 2. "One reused client" vs. the test fixture. The fixture swaps          │
+     │    sys.modules["openai"] per test. A module-level cached client would   │
+     │    leak between tests, so use a lazy get_client() that tests can reset  │
+     │    or inject.                                                           │
+     │ 3. Determinism metric. run_determinism_mode compares the entire         │
+     │    output.model_dump(). If the output carries quotes from extraction,   │
+     │    tokens, latency, or extracted facts, LLM wording drift lowers        │
+     │    exact_output_match_pct even when the decision is stable. Keep        │
+     │    TriageOutput code-derived only (evidence text built from normalized  │
+     │    values, not raw quotes). Log facts, tokens, and latency to a sidecar │
+     │    such as data/extractions.jsonl (gitignored).                         │
+     │ 4. Baseline gets overwritten. make baseline and the new pipeline both   │
+     │    write data/baseline_outputs.jsonl. Record the naive score first with │
+     │    OUTPUT=data/naive_outputs.jsonl REPORT=data/naive_report.json. This  │
+     │    costs API calls.                                                     │
+     │ 5. Category mapping when facts are UNKNOWN is underspecified, and the   │
+     │    score is exact-set. Per the labels:                                  │
+     │    - absent or ungrounded H&P or consent → REQUIRED_DOCUMENTATION       │
+     │      (case_00013, case_00048)                                           │
+     │    - absent CBC → REQUIRED_TESTING (case_00032, case_00036)             │
+     │    - unknown anticoag status → MISSING_REQUIRED_DATA (case_00033)       │
+     │                                                                         │
+     │    Ungrounded facts must fail the rule's own category, not default to   │
+     │    MISSING_REQUIRED_DATA.                                               │
+     │ 6. Rule 4 missing data is broader than DESIGN states. A missing BP is   │
+     │    also MISSING_REQUIRED_DATA (case_00022 has no vitals at all), not    │
+     │    just a missing temperature.                                          │
+     │ 7. Null procedure fields → only MISSING_REQUIRED_DATA. Labels confirm   │
+     │    this: case_00029 (null risk) does not get REQUIRED_TESTING, and      │
+     │    case_00011/case_00044 (null date) skip the H&P and lab windows.      │
+     │    Consent and vitals are still evaluated (case_00011 also has no       │
+     │    temperature). DESIGN matches, but should say explicitly which rules  │
+     │    still run.                                                           │
+     │ 8. Small rule gaps:                                                     │
+     │    - The H&P window needs the same 0 ≤ days lower bound as labs.        │
+     │    - Ties between structured and note vitals on the same date need a    │
+     │      rule (case_00008, 00009, 00020, 00038 share dates).                │
+     │    - A note-only anticoag mention with status unknown and nothing on    │
+     │      the med list could cause a false MISSING_REQUIRED_DATA; restrict   │
+     │      that path to med-list active: null plus no confirming note.        │
+     │    - Med list active: False plus a note saying "stopped" → not active   │
+     │      (case_00019, case_00043).                                          │
+     │ 9. "LLM reads, code decides" is softer than stated. is_preop_hp,        │
+     │    matches_scheduled_procedure, signed, deferred_to_other_team, and     │
+     │    anticoag status are judgments the LLM makes. That's acceptable, but  │
+     │    README should say so.                                                │
+     │ 10. Schema and runner constraints. TriageIssue only has category +      │
+     │     evidence: str. Add rule, sources, and checks as fields with         │
+     │     defaults; the eval's ScoredOutput allows extras, and run_baseline   │
+     │     serializes via model_dump(). run_baseline.py/run_evals.py are uv    │
+     │     --script with only openai+pydantic, so the new modules must be      │
+     │     stdlib + those two and importable as top-level (from rules import   │
+     │     ...).                                                               │
+     │                                                                         │
+     │ Build order                                                             │
+     │                                                                         │
+     │ 1. facts.py + rules.py + tests/test_rules.py. facts.py holds only       │
+     │    types: grounded-fact and normalized-record Pydantic models, shared   │
+     │    by extract and rules. Rules get hand-built facts and no API. Test    │
+     │    cases mirror labeled ones: 00002 (°C fever + unsigned consent),      │
+     │    00004 (entered-in-error fallback), 00009 (CBC 15d HIGH + no temp),   │
+     │    00018 (plan for the wrong drug), 00020 (no post-op instruction),     │
+     │    00028 (DBP exactly 110), 00029/00044 (null risk/date), 00033         │
+     │    (unknown status), 00032/00046 (recheck wins), plus boundary days     │
+     │    0/14/30/31 and a lab dated after the procedure.                      │
+     │ 2. normalize.py + tests/test_normalize.py. Lab aliases, BMP≠CMP,        │
+     │    brand→generic (Eliquis, Xarelto, Coumadin, Pradaxa, Savaysa),        │
+     │    aspirin/ASA/clopidogrel excluded, °C→°F, dates.                      │
+     │ 3. extract.py + tests/test_extract.py. Extraction Pydantic model,       │
+     │    prompt, lazy client, retries/timeouts, grounding check (pure tests:  │
+     │    whitespace/case normalization, wrong doc_id → dropped), and a mocked │
+     │    responses.parse.                                                     │
+     │ 4. core.py wiring. New triage_submission = normalize → extract → ground │
+     │    → rules → TriageOutput; rename the baseline; extend the schemas;     │
+     │    update tests/test_triage_submission.py and add an end-to-end test    │
+     │    with mocked extraction.                                              │
+     │ 5. Sidecar logging. Facts, tokens, latency, and cost per case go to     │
+     │    data/extractions.jsonl; add it to .gitignore.                        │
+     │ 6. Run and iterate. make test → make baseline evals score → make report │
+     │    error analysis (extraction miss vs. rule bug) → make determinism.    │
+     │ 7. Stretch. mutate.py controlled-error suite on READY cases; README     │
+     │    assumptions, cost table, and results.                                │
+     │                                                                         │
+     │ Verification                                                            │
+     │                                                                         │
+     │ - make test: rules/normalize/extract unit tests, no network.            │
+     │ - Naive vs. new make evals scores recorded; make determinism decision   │
+     │   stability 100% expected.                                              │
+     │ - make report: each remaining failure tagged as extraction miss or rule │
+     │   bug.                                                                  │
+     ╰─────────────────────────────────────────────────────────────────────────╯
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The files exist and the scores match what you gave (70.0%, 100% / 10%).
+  Updating the plan.
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ Good plan. Agree with all four points. Changes:                               
+                                                                                
+  Don’t re-run the naive baseline. I already ran it. Just copy the existing     
+  files: data/baseline_outputs.jsonl → data/naive_outputs.jsonl,                
+  data/eval_report.json → data/naive_report.json, data/determinism_report.json  
+  → data/naive_determinism_report.json. Naive scores: 70.0% aggregate;          
+  determinism 100% decision stability, 10% exact output match.                  
+  On determinism: agreed, the scored output stays code-derived. But every       
+  issue’s sources must still point a nurse to the exact record (doc_id/lab id,  
+  type, date, normalized value). Quotes go in the extractions.jsonl sidecar.    
+  I’ll note this trade-off in the README.                                       
+  Build order: rules.py + tests/test_rules.py first (pure, no API), then        
+  normalize.py, then extract.py, then wire into core.py. Stop after rules.py so 
+  I can review before moving on.                                                
+
+⏺ Updated plan
+  ⎿  /plan to preview
+  ⎿  User rejected Claude's plan:
+     ╭─────────────────────────────────────────────────────────────────────────╮
+     │ Pre-Op Triage — build plan (from DESIGN.md)                             │
+     │                                                                         │
+     │ Context                                                                 │
+     │                                                                         │
+     │ Branch emma-solution, clean tree; DESIGN.md committed in f83fbeb. Goal: │
+     │ replace the naive one-call                                              │
+     │ triage_submission in core.py with "LLM extracts grounded facts → code   │
+     │ applies Rules 1–4", scored by                                           │
+     │ run_evals.py on decision + exact issue-category set + schema validity   │
+     │ (equal weights).                                                        │
+     │                                                                         │
+     │ Plan summary                                                            │
+     │                                                                         │
+     │ - normalize.py (code): lab-code aliases (LAB-CBC→CBC, BMP≠CMP), drop    │
+     │   entered-in-error, brand→generic anticoag map, antiplatelet exclusion, │
+     │   date parsing, °C→°F.                                                  │
+     │ - extract.py (1 LLM call/case, temperature=0, responses.parse +         │
+     │   Pydantic, reused client, retry/timeout): H&P candidates, consents,    │
+     │   note vitals, anticoag mentions/plans, "not on file" statements, each  │
+     │   with {doc_id, quote}; a code grounding check drops facts whose quote  │
+     │   isn't in that doc.                                                    │
+     │ - rules.py (pure): Rules 1–4 → checks[] (incl. passes) → all issues[] → │
+     │   precedence NOT_CLEARED > NEEDS_FOLLOW_UP > READY; fail closed.        │
+     │ - Explanation is assembled from issues in code; the output gains rule,  │
+     │   sources, and checks.                                                  │
+     │                                                                         │
+     │ Conflicts / gaps found                                                  │
+     │                                                                         │
+     │ 1. The existing tests pin the naive baseline.                           │
+     │    tests/test_triage_submission.py asserts that triage_submission makes │
+     │    exactly one responses.create call with instructions ==               │
+     │    BASELINE_SYSTEM_PROMPT, format name preop_triage_output, strict is   │
+     │    False, the full submission JSON in the prompt, and that invalid      │
+     │    model JSON raises ValidationError. DESIGN changes all of these:      │
+     │    parse, a new prompt and schema, and decisions made in code.          │
+     │    Recommendation: rename the old function to                           │
+     │    baseline_triage_submission, point the 3 existing tests at it         │
+     │    unchanged, and write new tests for the new triage_submission.        │
+     │ 2. "One reused client" vs. the test fixture. The fixture swaps          │
+     │    sys.modules["openai"] per test. A module-level cached client would   │
+     │    leak between tests, so use a lazy get_client() that tests can reset  │
+     │    or inject.                                                           │
+     │ 3. Determinism metric. run_determinism_mode compares the entire         │
+     │    output.model_dump(). If the output carries quotes from extraction,   │
+     │    tokens, latency, or extracted facts, LLM wording drift lowers        │
+     │    exact_output_match_pct even when the decision is stable. Keep        │
+     │    TriageOutput code-derived only (evidence text built from normalized  │
+     │    values, not raw quotes). Log facts, tokens, and latency to a sidecar │
+     │    such as data/extractions.jsonl (gitignored).                         │
+     │ 4. Baseline gets overwritten. make baseline and the new pipeline both   │
+     │    write data/baseline_outputs.jsonl. Record the naive score first with │
+     │    OUTPUT=data/naive_outputs.jsonl REPORT=data/naive_report.json. This  │
+     │    costs API calls.                                                     │
+     │ 5. Category mapping when facts are UNKNOWN is underspecified, and the   │
+     │    score is exact-set. Per the labels:                                  │
+     │    - absent or ungrounded H&P or consent → REQUIRED_DOCUMENTATION       │
+     │      (case_00013, case_00048)                                           │
+     │    - absent CBC → REQUIRED_TESTING (case_00032, case_00036)             │
+     │    - unknown anticoag status → MISSING_REQUIRED_DATA (case_00033)       │
+     │                                                                         │
+     │    Ungrounded facts must fail the rule's own category, not default to   │
+     │    MISSING_REQUIRED_DATA.                                               │
+     │ 6. Rule 4 missing data is broader than DESIGN states. A missing BP is   │
+     │    also MISSING_REQUIRED_DATA (case_00022 has no vitals at all), not    │
+     │    just a missing temperature.                                          │
+     │ 7. Null procedure fields → only MISSING_REQUIRED_DATA. Labels confirm   │
+     │    this: case_00029 (null risk) does not get REQUIRED_TESTING, and      │
+     │    case_00011/case_00044 (null date) skip the H&P and lab windows.      │
+     │    Consent and vitals are still evaluated (case_00011 also has no       │
+     │    temperature). DESIGN matches, but should say explicitly which rules  │
+     │    still run.                                                           │
+     │ 8. Small rule gaps:                                                     │
+     │    - The H&P window needs the same 0 ≤ days lower bound as labs.        │
+     │    - Ties between structured and note vitals on the same date need a    │
+     │      rule (case_00008, 00009, 00020, 00038 share dates).                │
+     │    - A note-only anticoag mention with status unknown and nothing on    │
+     │      the med list could cause a false MISSING_REQUIRED_DATA; restrict   │
+     │      that path to med-list active: null plus no confirming note.        │
+     │    - Med list active: False plus a note saying "stopped" → not active   │
+     │      (case_00019, case_00043).                                          │
+     │ 9. "LLM reads, code decides" is softer than stated. is_preop_hp,        │
+     │    matches_scheduled_procedure, signed, deferred_to_other_team, and     │
+     │    anticoag status are judgments the LLM makes. That's acceptable, but  │
+     │    README should say so.                                                │
+     │ 10. Schema and runner constraints. TriageIssue only has category +      │
+     │     evidence: str. Add rule, sources, and checks as fields with         │
+     │     defaults; the eval's ScoredOutput allows extras, and run_baseline   │
+     │     serializes via model_dump(). run_baseline.py/run_evals.py are uv    │
+     │     --script with only openai+pydantic, so the new modules must be      │
+     │     stdlib + those two and importable as top-level (from rules import   │
+     │     ...).                                                               │
+     │                                                                         │
+     │ Build order                                                             │
+     │                                                                         │
+     │ 1. facts.py + rules.py + tests/test_rules.py. facts.py holds only       │
+     │    types: grounded-fact and normalized-record Pydantic models, shared   │
+     │    by extract and rules. Rules get hand-built facts and no API. Test    │
+     │    cases mirror labeled ones: 00002 (°C fever + unsigned consent),      │
+     │    00004 (entered-in-error fallback), 00009 (CBC 15d HIGH + no temp),   │
+     │    00018 (plan for the wrong drug), 00020 (no post-op instruction),     │
+     │    00028 (DBP exactly 110), 00029/00044 (null risk/date), 00033         │
+     │    (unknown status), 00032/00046 (recheck wins), plus boundary days     │
+     │    0/14/30/31 and a lab dated after the procedure.                      │
+     │ 2. normalize.py + tests/test_normalize.py. Lab aliases, BMP≠CMP,        │
+     │    brand→generic (Eliquis, Xarelto, Coumadin, Pradaxa, Savaysa),        │
+     │    aspirin/ASA/clopidogrel excluded, °C→°F, dates.                      │
+     │ 3. extract.py + tests/test_extract.py. Extraction Pydantic model,       │
+     │    prompt, lazy client, retries/timeouts, grounding check (pure tests:  │
+     │    whitespace/case normalization, wrong doc_id → dropped), and a mocked │
+     │    responses.parse.                                                     │
+     │ 4. core.py wiring. New triage_submission = normalize → extract → ground │
+     │    → rules → TriageOutput; rename the baseline; extend the schemas;     │
+     │    update tests/test_triage_submission.py and add an end-to-end test    │
+     │    with mocked extraction.                                              │
+     │ 5. Sidecar logging. Facts, tokens, latency, and cost per case go to     │
+     │    data/extractions.jsonl; add it to .gitignore.                        │
+     │ 6. Run and iterate. make test → make baseline evals score → make report │
+     │    error analysis (extraction miss vs. rule bug) → make determinism.    │
+     │ 7. Stretch. mutate.py controlled-error suite on READY cases; README     │
+     │    assumptions, cost table, and results.                                │
+     │                                                                         │
+     │ Verification                                                            │
+     │                                                                         │
+     │ - make test: rules/normalize/extract unit tests, no network.            │
+     │ - Naive vs. new make evals scores recorded; make determinism decision   │
+     │   stability 100% expected.                                              │
+     │ - make report: each remaining failure tagged as extraction miss or rule │
+     │   bug.                                                                  │
+     ╰─────────────────────────────────────────────────────────────────────────╯
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+⏺ User approved Claude's plan
+  ⎿  Plan saved to: 
+     ~/.claude/plans/read-design-md-core-py-run-evals-py-immutable-bumblebee.md 
+     · /plan to edit
+     Pre-Op Triage — build plan (from DESIGN.md)
+
+     Context
+
+     Branch emma-solution, clean tree; DESIGN.md committed in f83fbeb. Goal:
+     replace the naive one-call
+     triage_submission in core.py with "LLM extracts grounded facts → code
+     applies Rules 1–4". run_evals.py
+     scores decision + exact issue-category set + schema validity, with equal
+     weights.
+     Naive baseline (already run): 70.0% aggregate; determinism 100% decision 
+     stability, 10% exact output match.
+
+     Agreed decisions
+
+     - Rename the existing function to baseline_triage_submission. The 3
+       existing tests point at it unchanged, and the new triage_submission gets
+       its own tests.
+     - Use a lazy, resettable OpenAI client so the test fixture still works.
+     - The scored TriageOutput is purely code-derived. Quotes, tokens, latency,
+       and extracted facts go to the data/extractions.jsonl sidecar, which is
+       gitignored.
+     - Every issue still carries sources that point to the exact record. Each
+       source has kind (doc/lab/vital/med/procedure), id (doc_id or lab id),
+       type, date, and the normalized value, e.g. "CBC 2026-02-10, 19d before 
+       procedure" or "BP 157/117". Every check in checks[] carries the same
+       source.
+     - Unknown or ungrounded facts fail the rule's own category: missing
+       H&P/consent → REQUIRED_DOCUMENTATION, missing CBC/CMP → REQUIRED_TESTING.
+       Only unknown anticoag status, missing BP/temp, or null procedure
+       date/risk → MISSING_REQUIRED_DATA.
+     - Null procedure date/risk: skip the date/risk-dependent rules (H&P window,
+       lab windows). Consent, anticoag, and vitals are still evaluated.
+
+     Step 0: preserve the naive results (no API calls)
+
+     cp data/baseline_outputs.jsonl data/naive_outputs.jsonl
+     cp data/eval_report.json data/naive_report.json
+     cp data/determinism_report.json data/naive_determinism_report.json
+
+     Step 1: rules.py + tests/test_rules.py (pure, no API). STOP for review 
+     after this step.
+
+     - The input types live in rules.py for now: Pydantic models for normalized
+       records and grounded facts, each carrying its source pointer.
+       normalize.py and extract.py will later produce these types. Types:
+       - Source
+       - HPFact, ConsentFact
+       - LabRecord
+       - VitalReading (BP/temp, °F, date, order-in-note)
+       - AnticoagEvidence (med-list status + note mentions)
+       - AnticoagPlan
+       - CaseFacts (procedure date/risk + all of the above)
+     - evaluate(facts: CaseFacts) -> TriageResult returns decision, issues
+       (category, rule, evidence, sources), checks, and a code-built
+       explanation.
+     - Rules:
+       - H&P: pre-op only; 0 ≤ days_before ≤ 30.
+       - Consent: any signed consent that matches the scheduled procedure.
+       - Labs: drop entered-in-error, then take the latest per required test; 0 
+         ≤ days ≤ 30 (LOW/MOD CBC) or 14 (HIGH CBC+CMP).
+       - Anticoag:
+         - active = med-list active, or a note says current.
+         - Med-list active=False plus a note saying stopped → not active.
+         - Med-list active=None with no confirming note → MISSING_REQUIRED_DATA.
+         - A plan passes only if the drug matches, it has both pre- and post-op
+           instructions, and it is not deferred to another team.
+       - Vitals:
+         - Take the latest reading per type. When both readings have full
+           timestamps, compare the timestamps; within one note, later order wins
+           (recheck).
+         - Fall back to "note reading wins" only when a same-day note reading
+           has a date but no time. A structured recheck timed later that day
+           beats an earlier timed note reading.
+         - Test: a structured reading at 15:00 beats a 09:00 note reading on the
+           same day, and an untimed note reading beats a same-day structured
+           reading.
+         - SBP ≥ 180, DBP ≥ 110, or T > 100.4 → ACUTE_SAFETY_EXCLUSION.
+         - No BP or no temp → MISSING_REQUIRED_DATA.
+       - Precedence: NOT_CLEARED > NEEDS_FOLLOW_UP > READY, and all issues are
+         reported.
+     - Tests use hand-built CaseFacts that mirror labeled cases:
+       - 00002 (°C fever + unsigned consent → NOT_CLEARED with 2 categories)
+       - 00004 (entered-in-error fallback)
+       - 00009 (CBC 15d HIGH + no temp)
+       - 00018 (plan for the wrong drug)
+       - 00019 (inactive warfarin → READY)
+       - 00020 (no post-op instruction)
+       - 00022 (no vitals at all)
+       - 00028 (DBP exactly 110)
+       - 00029/00044 (null risk/date → only MISSING_REQUIRED_DATA)
+       - 00033 (unknown status)
+       - 00046 (recheck wins)
+       - boundary days 0/14/15/30/31, a lab dated after the procedure, and BMP
+         not counting as CMP
+       - every issue has ≥1 source with id + date; checks include passes.
+
+     Later steps (after review)
+
+     2. normalize.py + tests: lab aliases, brand→generic, antiplatelet
+        exclusion, °C→°F, dates → rules types.
+     3. extract.py + tests: Pydantic extraction schema, responses.parse,
+        temperature=0, retries/timeouts, grounding check, mocked client, sidecar
+        quotes.
+     4. core.py wiring + schema extension (rule, sources, checks on the output),
+        baseline rename, test updates; then make test baseline evals score 
+        report determinism, comparing against the naive files.
+
+     Verification (step 1)
+
+     make test passes: the existing 3 baseline tests are untouched, and the new
+     tests/test_rules.py runs with no network.
+
+⏺ Plan approved. First, Step 0 (copy the naive files), plus a quick look at the
+  date formats rules.py will receive.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Step 0 is done. Structured vitals carry full UTC timestamps, and documents
+  carry only dates, which fits the vitals tie-break rule. Writing rules.py:
+
+⏺ Write(rules.py)
+  ⎿  Wrote 573 lines to rules.py
+       1 """Deterministic policy rules (Rules 1-4) over normalized record
+         s and grounded facts.
+       3 No I/O and no LLM calls: `evaluate` is a pure function of `CaseF
+         acts`. Upstream,
+       4 `normalize.py` turns structured submission fields into these typ
+       5 turns grounded note facts into them.
+       6 """
+       7 
+       9 
+      10 import datetime as dt
+     … +609 lines (ctrl+o to expand)
+
+⏺ Now the tests. I'll use a READY baseline builder and have each test perturb
+  one thing, mirroring a labeled case.
+
+⏺ Write(tests/test_rules.py)
+  ⎿  Wrote 575 lines to tests/test_rules.py
+       1 """Pure tests of rules.evaluate on hand-built facts. No API call
+         s.
+       2 
+         jsonl where noted.
+       4 """
+       5 
+       6 from __future__ import annotations
+       8 import datetime as dt
+       9 
+      10 import pytest
+     … +635 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I've built rules.py and tests/test_rules.py and stopped there for your review.
+  make test passes: 49 tests, the 3 existing baseline tests unchanged, no
+  network calls.
+
+  Step 0: I copied the naive files to data/naive_outputs.jsonl,
+  data/naive_report.json and data/naive_determinism_report.json. I checked them
+  first, and the scores match yours (70.0%; 100% / 10%). They're untracked, not
+  gitignored, and I haven't committed anything.
+
+  rules.py
+  - Inputs: the planned types (Source, HPFact, ConsentFact, LabRecord,
+    VitalReading, AnticoagEvidence, AnticoagPlan, CaseFacts). Every record
+    carries a Source with kind, id, type, date and normalized value. There are
+    no quotes.
+  - evaluate(facts): builds checks[], including passes and skips. Each check has
+    a rule label, category, status (PASS / FAIL / UNKNOWN / SKIPPED), a
+    one-sentence evidence string and its sources.
+    - Every FAIL or UNKNOWN check becomes an issue.
+    - Any acute-safety issue gives NOT_CLEARED; any other issue gives
+      NEEDS_FOLLOW_UP; otherwise READY.
+    - The explanation is built by code: a summary line plus one line per issue.
+  - Vitals: the reading-order rule follows your tweak. Within one note, later
+    order wins. When both readings are timed, the later time wins. Otherwise an
+    untimed note reading beats a same-day structured one.
+  - Tests: they cover the labeled cases in the plan (00002, 00004, 00009, 00018,
+    00019, 00020, 00022, 00028, 00029, 00033, 00044, 00046 and more), the
+    boundary days, BMP≠CMP, and that every issue has sources with ids.
+
+  Judgment calls to check:
+  1. A lab dated after the procedure fails. If it's the most recent CBC, the
+     check fails even when an earlier CBC was in window. That's a literal
+     reading of "use only the most recent result" plus your "a test dated after
+     the procedure is invalid" assumption. No sample case has this, so the
+     labels can't settle it.
+  2. H&P: any pre-op H&P in the window passes, not only the newest. If no pre-op
+     H&P exists at all, the check fails even when the procedure date is null,
+     because "it exists" doesn't depend on the date. Only the window check is
+     skipped then.
+  3. Unknown anticoagulant status: a note mention with unknown status and no
+     med-list entry passes. Only active: null on the med list, with no note
+     settling it, gives MISSING_REQUIRED_DATA. This is the narrowing we agreed,
+     to avoid false MISSING_REQUIRED_DATA.
+  4. Issues about something absent (no CBC, no temperature, no consent) cite the
+     procedure record as their source, since there's no record to point at.
+  5. "Not on file" statements aren't used yet. Absence alone already triggers
+     the right category. I can attach those statements as extra sources once
+     extract.py exists.
+  6. Import cycle risk: rules.py imports Decision, IssueCategory and
+     ProcedureRisk from core.py. When core.py is wired to call rules.py in step
+     4, that's a circular import. The fix is either importing rules inside
+     triage_submission or moving those three types into a small types.py. I'd
+     move them.
+
+  Once you've reviewed, I'll start on normalize.py.
+✻ Sautéed for 3m 11s · done 7:13 PM
+
+※ recap: We're replacing the naive LLM triage with LLM fact extraction plus rules applied in code; step one, rules.py and its tests, is done and all 49 tests pass. Next, you review rules.py and my flagged judgment calls, then I build normalize.py. (disable recaps in /config)
+
+❯ Review of step 1:                                                             
+  Post procedure lab -> FAIL: agree, fail closed on a date anomaly. Note it in  
+  assumptions.                                                                  
+  H&P any in window: agrees since “most recent only” applies to tests, not      
+  documents.                                                                    
+  Unknown anticoag status: we didn’t agree on that narrowing. My default is     
+  fail-closed: a current or unclear note mention with no plan ->                
+  MISSING_REQUIRED_DATA. Before changing it, check the 50 labeled cases: are    
+  there any where a note mentions an anticoagulant with unclear status? What do 
+  their labels say? Go with whatever the labels support and tell me which       
+  cases decided it.                                                             
+  Absent-record issues: keep the procedure source, but make the evidence say    
+  what was searched, e.g. “No CBC found among 3 lab results.”                   
+  Drop “not on file” from the extraction schema entirely --- absence already    
+  covers it.                                                                    
+  Agree, move shared types to types.py.                                         
+  Then run make test, and commit rules.py, types.py, tests/test_rules.py, and   
+  the three naive_* files (so the before/after comparison is reproducible).     
+  Then start normalize.py.                                                      
+
+⏺ First I'll check the labels on anticoagulant status, since that decides the
+  rule. I'm pulling every note sentence that mentions an anticoagulant or blood
+  thinner.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The labels confirm: unclear status (med list or notes) with no current
+  statement defaults to MISSING_REQUIRED_DATA, while current-use-with-no-plan
+  cases actually stay ANTICOAGULATION_MANAGEMENT, contradicting my earlier
+  assumption. I'll also rename types.py to triage_types.py to avoid clashing
+  with Python's stdlib types module used in the tests.
+
+⏺ Write(triage_types.py)
+  ⎿  Wrote 18 lines to triage_types.py
+       1 """Policy literals shared by core, rules, and the eval scripts.
+       2 
+       3 Not named `types.py`: that would shadow the stdlib `types` modul
+         e.
+       4 """
+       6 from __future__ import annotations
+       7 
+       8 from typing import Literal
+       9 
+      10 Decision = Literal["READY", "NEEDS_FOLLOW_UP", "NOT_CLEARED"]
+     … +8 lines (ctrl+o to expand)
+
+⏺ Update(core.py)
+  ⎿  Removed 10 lines
+      52  - Return exactly one JSON object.
+      53  """.strip()
+      54  
+      55 -Decision = Literal["READY", "NEEDS_FOLLOW_UP", "NOT_CLEARED"]  
+      56 -ProcedureRisk = Literal["LOW", "MODERATE", "HIGH"]             
+      57 -IssueCategory = Literal[                                       
+      58 -    "REQUIRED_DOCUMENTATION",                                  
+      59 -    "REQUIRED_TESTING",                                        
+      60 -    "ANTICOAGULATION_MANAGEMENT",                              
+      61 -    "ACUTE_SAFETY_EXCLUSION",                                  
+      62 -    "MISSING_REQUIRED_DATA",                                   
+      63 -]                                                              
+      64 -                                                               
+      55  # -------------------------
+      56  # Schemas
+      57  # -------------------------
+
+⏺ Update(core.py)
+  ⎿  Added 2 lines, removed 1 line
+       3  from __future__ import annotations
+       4  
+       5  import json
+       6 -from typing import Literal                                     
+       6  
+       7  from pydantic import AliasChoices, BaseModel, Field
+       8  
+       9 +from triage_types import Decision, IssueCategory, ProcedureRisk
+      10 +                                                               
+      11  # -------------------------
+      12  # Policy + system prompt
+      13  # -------------------------
+
+⏺ Update(rules.py)
+  ⎿  Added 1 line, removed 1 line
+      13  
+      14  from pydantic import BaseModel, Field
+      15  
+      16 -from core import Decision, IssueCategory, ProcedureRisk        
+      16 +from triage_types import Decision, IssueCategory, ProcedureRisk
+      17  
+      18  # -------------------------
+      19  # Policy constants
+
+⏺ Now the anticoagulant rule and the "what was searched" evidence for absent
+  records:
+
+⏺ Update(rules.py)
+  ⎿  Added 5 lines
+      105      vitals: list[VitalReading] = Field(default_factory=list)
+      106      anticoag: list[AnticoagEvidence] = Field(default_factory=l
+           ist)
+      107      anticoag_plans: list[AnticoagPlan] = Field(default_factory
+           =list)
+      108 +    documents_searched: int = 0  # all submission documents, f
+          +or absence evidence                                           
+      109  
+      110 +    @property                                                 
+      111 +    def structured_vitals_searched(self) -> int:              
+      112 +        return sum(1 for v in self.vitals if not v.from_note) 
+      113  
+      114 +                                                              
+      115  # -------------------------
+      116  # Output types
+      117  # -------------------------
+
+⏺ Update(rules.py)
+  ⎿  Added 4 lines, removed 2 lines
+      195              rule=rule,
+      196              category=category,
+      197              status="FAIL",
+      198 -            evidence="No dated pre-op H&P on file"            
+      199 -            + (" (only non-pre-op or undated H&P documents)." 
+          -if others else "."),                                          
+      198 +            evidence=f"No dated pre-op H&P found among {facts.
+          +documents_searched} documents"                                
+      199 +            + (                                               
+      200 +                f" ({len(others)} H&P document(s) not pre-op o
+          +r undated)." if others else "."                               
+      201 +            ),                                                
+      202              sources=others or [facts.procedure_source],
+      203          )
+      204  
+
+⏺ Update(rules.py)
+  ⎿  Added 1 line, removed 1 line
+      259              rule=rule,
+      260              category=category,
+      261              status="FAIL",
+      262 -            evidence="No surgical consent on file.",          
+      262 +            evidence=f"No surgical consent found among {facts.
+          +documents_searched} documents.",                              
+      263              sources=[facts.procedure_source],
+      264          )
+      265  
+
+⏺ Update(rules.py)
+  ⎿  Added 1 line, removed 1 line
+      311                      rule=rule,
+      312                      category=category,
+      313                      status="FAIL",
+      314 -                    evidence=f"No valid {test} on file{note}."
+          -,                                                             
+      314 +                    evidence=f"No valid {test} found among {le
+          +n(facts.labs)} lab results{note}.",                           
+      315                      sources=[facts.procedure_source],
+      316                  )
+      317              )
+
+⏺ Update(rules.py)
+  ⎿  Added 6 lines, removed 6 lines
+      358          evidence = [e for e in facts.anticoag if e.drug == dru
+           g]
+      359          sources = [e.source for e in evidence]
+      360          current = any(e.status == "current" for e in evidence)
+      361 -        notes = [e for e in evidence if not e.from_med_list]  
+      362 -        unknown_on_med_list = any(e.from_med_list and e.status
+          - == "unknown" for e in evidence)                              
+      363 -        resolved_by_note = any(e.status != "unknown" for e in 
+          -notes)                                                        
+      361 +        unclear = [e for e in evidence if e.status == "unknown
+          +"]                                                            
+      362  
+      365 -        if not current and unknown_on_med_list and not resolve
+          -d_by_note:                                                    
+      363 +        # Fail closed: any unclear statement blocks "not takin
+          +g" unless another says current.                               
+      364 +        if not current and unclear:                           
+      365 +            where = sorted({"med list" if e.from_med_list else
+          + "notes" for e in unclear})                                   
+      366              checks.append(
+      367                  Check(
+      368                      rule=rule,
+      369                      category="MISSING_REQUIRED_DATA",
+      370                      status="UNKNOWN",
+      371 -                    evidence=f"{drug} is on the med list with 
+          -no active status, "                                           
+      372 -                    "and no note confirms whether it is curren
+          -t.",                                                          
+      371 +                    evidence=f"Unclear whether {drug} is curre
+          +nt ({' and '.join(where)}); "                                 
+      372 +                    "no statement confirms it is being taken o
+          +r stopped.",                                                  
+      373                      sources=sources,
+      374                  )
+      375              )
+
+⏺ Update(rules.py)
+  ⎿  Added 2 lines, removed 1 line
+      480                  rule=rule,
+      481                  category="MISSING_REQUIRED_DATA",
+      482                  status="UNKNOWN",
+      483 -                evidence="No blood pressure recorded in struct
+          -ured vitals or notes.",                                       
+      483 +                evidence=f"No blood pressure found among {fact
+          +s.structured_vitals_searched} "                               
+      484 +                f"structured vitals and {facts.documents_searc
+          +hed} documents.",                                             
+      485                  sources=[facts.procedure_source],
+      486              )
+      487          )
+
+⏺ Update(rules.py)
+  ⎿  Added 2 lines, removed 1 line
+      514                  rule=rule,
+      515                  category="MISSING_REQUIRED_DATA",
+      516                  status="UNKNOWN",
+      517 -                evidence="No temperature recorded in structure
+          -d vitals or notes.",                                          
+      517 +                evidence=f"No temperature found among {facts.s
+          +tructured_vitals_searched} "                                  
+      518 +                f"structured vitals and {facts.documents_searc
+          +hed} documents.",                                             
+      519                  sources=[facts.procedure_source],
+      520              )
+      521          )
+
+⏺ Update(rules.py)
+  ⎿  Added 1 line, removed 1 line
+      311                      rule=rule,
+      312                      category=category,
+      313                      status="FAIL",
+      314 -                    evidence=f"No valid {test} found among {le
+          -n(facts.labs)} lab results{note}.",                           
+      314 +                    evidence=f"No {test} found among {len(fact
+          +s.labs)} lab results{note}.",                                 
+      315                      sources=[facts.procedure_source],
+      316                  )
+      317              )
+
+⏺ Update(tests/test_rules.py)
+  ⎿  Added 17 lines, removed 12 lines
+      466      assert categories(result) == ["MISSING_REQUIRED_DATA"]
+      467  
+      468  
+      469 -def test_unknown_med_list_status_resolved_by_note() -> None:  
+      470 -    stopped = evaluate(                                       
+      469 +def test_current_statement_overrides_unclear_one() -> None:   
+      470 +    result = evaluate(                                        
+      471          ready_facts(
+      472 -            anticoag=[ac("warfarin", "unknown"), ac("warfarin"
+          -, "discontinued", from_med_list=False)]                       
+      473 -        )                                                     
+      474 -    )                                                         
+      475 -    taking = evaluate(                                        
+      476 -        ready_facts(                                          
+      472              anticoag=[ac("warfarin", "unknown"), ac("warfarin"
+           , "current", from_med_list=False)]
+      473          )
+      474      )
+      475  
+      481 -    assert stopped.decision == "READY"                        
+      482 -    assert categories(taking) == ["ANTICOAGULATION_MANAGEMENT"
+          -]                                                             
+      476 +    assert categories(result) == ["ANTICOAGULATION_MANAGEMENT"
+          +]                                                             
+      477  
+      478  
+      485 -def test_note_only_unknown_mention_is_not_missing_data() -> No
+          -ne:                                                           
+      486 -    result = evaluate(ready_facts(anticoag=[ac("apixaban", "un
+          -known", from_med_list=False)]))                               
+      479 +@pytest.mark.parametrize(                                     
+      480 +    "evidence",                                               
+      481 +    [                                                         
+      482 +        # Fail closed: an unclear statement is not cancelled b
+          +y a "stopped" one.                                            
+      483 +        [ac("warfarin", "unknown"), ac("warfarin", "discontinu
+          +ed", from_med_list=False)],                                   
+      484 +        # Note-only unclear mention, nothing on the med list. 
+      485 +        [ac("apixaban", "unknown", from_med_list=False)],     
+      486 +    ],                                                        
+      487 +)                                                             
+      488 +def test_unclear_status_without_current_statement_is_missing_d
+          +ata(                                                          
+      489 +    evidence: list[AnticoagEvidence],                         
+      490 +) -> None:                                                    
+      491 +    result = evaluate(ready_facts(anticoag=evidence))         
+      492  
+      488 -    assert result.decision == "READY"                         
+      493 +    assert categories(result) == ["MISSING_REQUIRED_DATA"]    
+      494  
+      495  
+      496  # -------------------------
+
+⏺ Update(tests/test_rules.py)
+  ⎿  Added 1 line
+      158          "consents": [consent()],
+      159          "labs": [lab("CBC", 10)],
+      160          "vitals": [bp(122, 76), temp(98.6)],
+      161 +        "documents_searched": 4,                              
+      162      }
+      163      base.update(overrides)
+      164      return CaseFacts.model_validate(base)
+
+⏺ Update(tests/test_rules.py)
+  ⎿  Added 1 line, removed 1 line
+      352      result = evaluate(ready_facts(procedure_risk="HIGH", labs=
+           [lab("CBC", 3), lab("BMP", 3)]))
+      353  
+      354      assert check(result, "2 CMP").status == "FAIL"
+      355 -    assert "No valid CMP" in check(result, "2 CMP").evidence  
+      355 +    assert check(result, "2 CMP").evidence == "No CMP found am
+          +ong 2 lab results."                                           
+      356  
+      357  
+      358  def test_entered_in_error_falls_back_to_previous_result() -> N
+           one:
+
+⏺ Update(tests/test_rules.py)
+  ⎿  Added 24 lines
+      579      assert categories(result) == ["MISSING_REQUIRED_DATA"]
+      580      assert check(result, "4.1").status == "UNKNOWN"
+      581      assert check(result, "4.2").status == "UNKNOWN"
+      582 +                                                              
+      583 +                                                              
+      584 +def test_absent_record_evidence_says_what_was_searched() -> No
+          +ne:                                                           
+      585 +    result = evaluate(                                        
+      586 +        ready_facts(                                          
+      587 +            hps=[hp(5, preop=False, doc_id="wellness")],      
+      588 +            consents=[],                                      
+      589 +            labs=[lab("TSH", 5), lab("UA", 5), lab("CBC", 3, s
+          +tatus="entered-in-error")],                                   
+      590 +            vitals=[bp(120, 80), bp(118, 76, 5)],             
+      591 +        )                                                     
+      592 +    )                                                         
+      593 +                                                              
+      594 +    assert check(result, "1.1").evidence == (                 
+      595 +        "No dated pre-op H&P found among 4 documents (1 H&P do
+          +cument(s) not pre-op or undated)."                            
+      596 +    )                                                         
+      597 +    assert check(result, "1.2").evidence == "No surgical conse
+          +nt found among 4 documents."                                  
+      598 +    assert check(result, "2 CBC").evidence == (               
+      599 +        "No CBC found among 3 lab results (1 entered-in-error 
+          +result ignored)."                                             
+      600 +    )                                                         
+      601 +    assert check(result, "4.2").evidence == (                 
+      602 +        "No temperature found among 2 structured vitals and 4 
+          +documents."                                                   
+      603 +    )                                                         
+      604 +    for prefix in ("1.2", "2 CBC", "4.2"):                    
+      605 +        assert [s.kind for s in check(result, prefix).sources]
+          + == ["procedure"]                                             
+
+  Ran 1 shell command (ctrl+o to expand)
+⏺ 51 tests pass. core.py changed too, since the literals moved out of it. I'll
+  check that the scripts still import, then commit core.py with the rest.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Step 1 is committed as d3888e6. Before starting normalize.py, I'll record the
+  review decisions in the plan file so they carry into later steps.
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The vitals union parses correctly for all 144 readings. Writing normalize.py:
+
+⏺ Write(normalize.py)
+  ⎿  Wrote 236 lines to normalize.py
+       1 """Structured submission fields -> rules.CaseFacts (no LLM).
+       2 
+       3 Handles procedure fields, labs, structured vitals and the med li
+       4 facts (H&Ps, consents, note vitals, anticoag mentions and plans)
+          come from
+       5 extract.py and are merged into the same CaseFacts.
+       6 """
+       8 from __future__ import annotations
+       9 
+      10 import datetime as dt
+     … +251 lines (ctrl+o to expand)
+
+⏺ Now tests/test_normalize.py. It includes a smoke test over all 50 sample
+  cases, so vocabulary gaps in the real data show up.
+
+⏺ Write(tests/test_normalize.py)
+  ⎿  Wrote 164 lines to tests/test_normalize.py
+       1 from __future__ import annotations
+       2 
+       3 import datetime as dt
+       4 import json
+       5 from pathlib import Path
+       6 
+       7 import pytest
+       8 
+       9 from core import PatientSubmission
+      10 from normalize import (
+     … +177 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 82 tests pass. A quick check that the med-list mapping over the real data
+  matches the anticoagulant cases found earlier:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I made your review changes and committed step 1. normalize.py and its tests
+  are written but not committed, and I've paused before extract.py. make test
+  passes all 82 tests.
+
+  What the labels decided on anticoagulant status:
+  - Unclear status gives MISSING_REQUIRED_DATA. That's your fail-closed default,
+    and I've switched to it. Only one sample case has an unclear mention:
+    case_00033, labeled MISSING_REQUIRED_DATA. No case has an unclear mention in
+    a note alone, so nothing supported my narrower version. A "stopped"
+    statement elsewhere doesn't cancel an unclear one; only a "current"
+    statement overrides it.
+  - Current with no plan stays ANTICOAGULATION_MANAGEMENT, not 
+    MISSING_REQUIRED_DATA. This part of your default conflicts with the labels.
+    In case_00027 (Eliquis) and case_00038 (Coumadin), the patient reports
+    taking the drug in a note, nothing is on the med list, there's no plan, and
+    both are labeled ANTICOAGULATION_MANAGEMENT.
+
+  Other review changes:
+  - Missing-record evidence now says what was searched, e.g. "No CBC found among
+    3 lab results (1 entered-in-error result ignored)." These issues still cite
+    the procedure record as their source.
+  - Shared types went into triage_types.py, not types.py. A top-level types.py
+    would collide with Python's built-in types module, which the existing tests
+    import (from types import SimpleNamespace). core.py imports the types back,
+    so run_evals.py and run_baseline.py still import cleanly; I checked.
+  - Commit d3888e6 has rules.py, triage_types.py, tests/test_rules.py and the
+    three naive_* files. It also has core.py, since the types moved out of it.
+  - Noted for later: the post-procedure-lab assumption (for the README) and
+    dropping "not on file" from the extraction schema are recorded in the plan
+    file.
+
+  normalize.py
+  - What it does: turns the structured parts of a submission (procedure fields,
+    labs, structured vitals, med list) into the inputs rules.py takes. It also
+    counts the documents, for the missing-record wording.
+  - Lab codes: LAB- prefixes are stripped, and BMP stays BMP, so it never counts
+    as CMP.
+  - Drug names: brand names map to generics, and aspirin/ASA and clopidogrel are
+    excluded. Over the 50 cases this picks up exactly the 13 cases with an
+    anticoagulant on the med list, with the right status for each.
+  - Pointers to records: structured vitals and med-list rows have no ids, so
+    sources point to them by position, e.g. vitals[0] and medications[1], with
+    the normalized value attached ("BP 122/76 (Pre-op clinic)").
+  - Records dropped: a lab with no date or no identifiable code, or a vital with
+    no date, is skipped, so it can't satisfy a window check. None of the 50
+    cases has one.
+  - Timestamps: used as written, with no time-zone shift. Procedure dates have
+    no time zone, so a reading near midnight UTC could land on a different local
+    day. No sample case is affected.
+
+  Decision for step 4: normalize.py imports the submission schema from core.py.
+  When core.py calls the pipeline in step 4, that's another import cycle. I'd
+  import the pipeline inside triage_submission, the same way core.py already
+  imports openai. The alternative is moving the schemas out of core.py.
+
+  Should I commit normalize.py and its tests and start extract.py?
+
+✻ Crunched for 2m 42s · done 7:25 PM
+
+❯ Agree on both: current with no plan -> ANTICOAGULATION_MANAGEMENT per cases   
+  27/38, and the lazy import. Commit normalize.py + its tests. Then extract.py, 
+  with these requirements:                                                      
+  -One call per case. Use client.responses.parse with a Pydantic schema         
+  (strict), temperature=0, gpt-4.1-mini, a reused lazy client, and a timeout    
+  plus retries. Use enums wherever possible (signed: true/false/unclear;        
+  anticoag status: current/discontinued/unknown) so free text can’t leak into   
+  decisions.                                                                    
+  -Every fact has doc_id + quote. Grounding check: normalize whitespace and     
+  case, and require the quote to be a substring of that doc’s text. Drop        
+  ungrounded facts and count the drops.                                         
+  -Show me the extraction prompt before running anything.                       
+  -Then run it on 5 diverse cases only (include 00000, 00005, 00024, 00033,     
+  00047). Show me the extracted facts and any grounding drops before we wire it 
+  into core.py.                                                                 
+
+⏺ Committing step 2 first.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Before writing the prompt, I'll read the note text of the 5 cases you named,
+  so the schema fits how the notes actually phrase things.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Notes give vital times ("09:05 BP 157/117") and temperatures in °C or °F. Next
+  I'll check how rechecks and unsigned consents are worded across all cases.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I noticed notes include explicit vital-time stamps like "rechecked at 10:36"
+  and "ADDENDUM 08:53." Before trusting each document's date field for H&P,
+  consent, and note-vitals dates, I'll verify it matches the date actually
+  written in the note text.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ All 174 stated dates match the date field, so dates come from code and the LLM
+  never handles them. Next I'll check the installed SDK's responses.parse
+  signature.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The SDK supports everything needed, and nullable fields stay valid under
+  strict mode. Writing extract.py:
+
+⏺ Write(extract.py)
+  ⎿  Wrote 439 lines to extract.py
+      1 """One LLM call per case: documents -> typed facts, each with {do
+        c_id, quote}.
+      3 The model only reads. Every fact must quote its document verbatim
+        ; the grounding
+      4 check drops facts whose quote isn't in that document's text, and 
+      5 the missing fact as absent (fail closed). Dates come from documen
+        t metadata in
+      6 code, never from the model.
+      8 
+      9 from __future__ import annotations
+     … +518 lines (ctrl+o to expand)
+
+⏺ One cleanup: move the datetime import to the top of the file.
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line, removed 3 lines
+      257      return all(v is None or float(v) in found for v in values)
+      258  
+      259  
+      260 -def _parse_hhmm(value: str | None) -> Any:                    
+      261 -    import datetime as dt                                     
+      262 -                                                              
+      260 +def _parse_hhmm(value: str | None) -> dt.time | None:         
+      261      if not value:
+      262          return None
+      263      match = re.fullmatch(r"(\d{1,2}):(\d{2})", value.strip())
+
+⏺ Update(extract.py)
+  ⎿  Added 3 lines
+       8  
+       9  from __future__ import annotations
+      10  
+      11 +import argparse                                                
+      12 +import datetime as dt                                          
+      13  import json
+      14 +from pathlib import Path                                       
+      15  import re
+      16  import time
+      17  from typing import Any, Literal
+
+⏺ Now a small CLI for the 5-case sample run. It writes the sidecar rows and
+  prints the facts that survive grounding, the drops, and what the rules would
+  decide.
+
+⏺ Update(extract.py)
+  ⎿  Added 14 lines
+      426      )
+      427  
+      428  
+      429 +def sidecar_row(                                              
+      430 +    case_id: str, extraction: CaseExtraction, grounded: Ground
+          +edFacts, meta: dict[str, Any]                                 
+      431 +) -> dict[str, Any]:                                          
+      432 +    """Quotes and call metadata for data/extractions.jsonl (no
+          +t part of the scored output)."""                              
+      433 +                                                              
+      434 +    return {                                                  
+      435 +        "case_id": case_id,                                   
+      436 +        **meta,                                               
+      437 +        "extraction": extraction.model_dump(),                
+      438 +        "drops": [d.model_dump() for d in grounded.drops],    
+      439 +        "drop_count": len(grounded.drops),                    
+      440 +    }                                                         
+      441 +                                                              
+      442 +                                                              
+      443  def merge_facts(structured: CaseFacts, grounded: GroundedFacts
+           ) -> CaseFacts:
+      444      """Add grounded note facts to the structured facts from no
+           rmalize.py."""
+      445  
+
+  Searched for 1 pattern (ctrl+o to expand)
+⏺ Now tests/test_extract.py: grounding tests (pure) plus a mocked
+  responses.parse call. No network.
+
+⏺ Write(tests/test_extract.py)
+  ⎿  Wrote 263 lines to tests/test_extract.py
+       1 from __future__ import annotations
+       2 
+       3 import datetime as dt
+       4 from types import SimpleNamespace
+       5 from unittest.mock import Mock
+       6 
+       7 import pytest
+       8 
+       9 import extract
+      10 from core import Document, PatientSubmission
+     … +313 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ All 99 tests pass. One last offline check: confirm CaseExtraction converts to
+  a valid strict JSON schema, and measure the prompt size for the 5 cases.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I committed normalize.py and its tests (70ed6fd), and wrote extract.py with
+  tests/test_extract.py. make test passes all 99 tests, all offline. I haven't
+  called the API yet: you asked to see the prompt first, so it's below.
+
+  Extraction prompt
+
+  These are the instructions sent with each call (EXTRACTION_INSTRUCTIONS in
+  extract.py):
+
+  You extract facts from pre-operative clinical documents. You do not decide
+  whether the patient is ready for surgery; separate code applies the policy to
+  what you extract.
+
+  Rules for every fact:
+  - doc_id: the id of the document the fact comes from, copied exactly.
+  - quote: a short excerpt (one line or sentence, at most 200 characters) copied
+  character-for-character from that document's text. Do not paraphrase,
+  abbreviate, fix typos, or join text from different places. Facts whose quote
+  is not found in that document are discarded.
+  - Extract only what the documents state. Never fill gaps from general
+  knowledge. When a document is ambiguous, use the "unclear"/"unknown"/null
+  option.
+
+  What to extract:
+
+  1. hp_candidates: every document that is itself a history and physical (H&P),
+  whatever its title or spelling ("H&P", "History and Physical", "Admission
+  H&P", "Clinic H&P", "Pre-op H and P", ...).
+     - is_preop_hp: true if it is an evaluation for a planned surgery; false if
+  it is an annual wellness, establish-care, or other visit not done to evaluate
+  for surgery.
+     - quote: the line showing the encounter's purpose (e.g. "Encounter: annual
+  wellness / establish care", or "Planned procedure: ...").
+     Do not list documents that only refer to an H&P (e.g. "H&P reviewed", "H&P
+  not on file").
+
+  2. consents: every surgical consent document.
+     - signed: "true" only if the text shows the patient signed (patient
+  signature, patient e-signature, "Signed by patient", "Patient signature on
+  file - signed"). "false" if it shows the patient has not signed (blank
+  signature line, "pending", "NOT COMPLETED", "not yet signed", printed for
+  review). "unclear" otherwise. A physician attestation or physician signature
+  is not a patient signature.
+     - quote: the patient-signature line or signature-status line.
+     - procedure_named: the procedure as written in the consent, or null.
+     - matches_scheduled_procedure: "yes" if procedure_named is the same
+  operation as the scheduled procedure given below (wording may differ), "no" if
+  it is a different operation, "unclear" if no procedure is named.
+
+  3. vitals: every blood pressure and temperature reading recorded in a
+  document's text. Skip placeholders such as "See flowsheet", "deferred", "not
+  recorded".
+     - kind: "bp" or "temp". One line with both a BP and a temperature yields
+  two facts.
+     - bp: systolic and diastolic as written; temp_value and temp_unit null.
+     - temp: temp_value and temp_unit ("F" or "C") as written, without
+  converting; systolic and diastolic null.
+     - time: the reading's stated time as 24-hour "HH:MM" (e.g. "09:05",
+  "rechecked at 10:36", "ADDENDUM 08:53"), else null.
+     - order_in_note: 1 for the first reading of that kind in the document, 2
+  for the next (e.g. a recheck), and so on.
+     - quote: text containing the reading's numbers.
+
+  4. anticoagulant_mentions: every statement about whether the patient takes an
+  anticoagulant (warfarin/Coumadin, apixaban/Eliquis, rivaroxaban/Xarelto,
+  dabigatran/Pradaxa, edoxaban/Savaysa, enoxaparin/Lovenox, heparin, or another
+  anticoagulant). Exclude antiplatelets (aspirin/ASA, clopidogrel). Exclude a
+  drug that appears only inside a perioperative instruction (e.g. "Bridge with
+  enoxaparin").
+     - drug: the name as written.
+     - status: "current" if the patient is taking or maintained on it (including
+  a medication-list line in the note); "discontinued" if it was stopped or the
+  patient is "not currently anticoagulated"; "unknown" if the text says it is
+  unclear or unconfirmed whether the patient takes it.
+
+  5. anticoagulant_plans: each documented perioperative management plan for an
+  anticoagulant.
+     - drug: the drug the plan is written for, as written.
+     - pre_op_quote: the instruction for holding/stopping before surgery, or
+  null.
+     - post_op_quote: the instruction for resuming/restarting after surgery, or
+  null. A promise to address it later (e.g. "will be addressed after surgery")
+  is not an instruction: use null.
+     - deferral_quote: text that leaves the management to another team or to a
+  later decision (e.g. "to be determined by the surgical team", "recommend the
+  surgical team discuss"), or null. A concrete instruction that merely mentions
+  a team (e.g. "Resume ... once hemostasis is secure, per surgical team") is not
+  a deferral.
+
+  Return empty lists when nothing applies.
+
+  What goes with it: the scheduled procedure type, then each document as one
+  JSON line (doc_id, type, date, text). The structured vitals, labs and med list
+  aren't sent; code handles those. The procedure date isn't sent either. That's
+  about 2,400–3,200 tokens per case for the 5 you picked.
+
+  Design choices to check
+
+  1. Dates come from code, never the model. H&P, consent and note-vital dates
+     are taken from each document's date field. I checked that the field matches
+     the date written in the note text for all 174 notes that state one.
+  2. Plan parts count only if their own quote is found. deferred_to_other_team
+     isn't a model-chosen yes/no; it's true only if a deferral quote is found in
+     the document. The same goes for the pre-op and post-op instructions. A
+     made-up "resume warfarin" line therefore can't make a plan pass.
+  3. Matching quote checks, beyond what you specified:
+     - Text matching ignores whitespace, case and curly vs straight quotes.
+     - Every BP or temperature number the model extracts must appear in its own
+       quote. A real quote can't carry a wrong number.
+     - A mention that maps to no anticoagulant, such as aspirin, is dropped and
+       counted.
+  4. Model choices stay fixed options. Signed is true/false/unclear, consent
+     match is yes/no/unclear, anticoagulant status is
+     current/discontinued/unknown, and temperature unit is F/C. The only free
+     text is the quotes, the drug names (mapped to generics by code) and the
+     consent's named procedure, which is used only in the evidence text.
+  5. Timeout and retries: 60-second timeout. The SDK retries connection errors,
+     rate limits and server errors 3 times. The code makes one extra attempt if
+     a reply comes back without parsed output.
+
+  The run, once you approve
+
+  uv run --with 'openai>=2.0.0' --with 'pydantic>=2.8.0' python extract.py
+  case_00000 case_00005 case_00024 case_00033 case_00047
+
+  That's 5 API calls on gpt-4.1-mini. For each case it prints the facts that
+  pass the quote check, every dropped fact with its reason and quote, and what
+  the rules decide compared with the label. The full extraction, quotes and
+  token counts go to data/extractions.jsonl, which I've added to .gitignore.
+  Neither extract.py nor the .gitignore change is committed yet.
+
+  Shall I run it, or do you want to change the prompt first?
+
+✻ Baked for 3m 1s · done 7:34 PM
+
+❯ Strong prompt — exact quotes, extract-only, units as written, and code-owned  
+  dates are all what I wanted. I also like that plan parts only count if their  
+  own quote is grounded. One gap: a planned hold must not read as discontinued. 
+  “Stop warfarin 5 days before surgery” is a future instruction for a drug the  
+  patient is currently on. Add to the anticoagulant_mentions status rule: “A    
+  planned or future hold/stop before surgery means the patient is current;      
+  record that instruction under anticoagulant_plans, not as discontinued.       
+  ‘discontinued’ only means the patient has already stopped taking it.” Then    
+  run the 5 cases. In the results, specifically check that case_00000’s Xarelto 
+  comes out as current with a plan, not discontinued.                           
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line
+      129  4. anticoagulant_mentions: every statement about whether the p
+           atient takes an anticoagulant (warfarin/Coumadin, apixaban/Eli
+           quis, rivaroxaban/Xarelto, dabigatran/Pradaxa, edoxaban/Savays
+           a, enoxaparin/Lovenox, heparin, or another anticoagulant). Exc
+           lude antiplatelets (aspirin/ASA, clopidogrel). Exclude a drug 
+           that appears only inside a perioperative instruction (e.g. "Br
+           idge with enoxaparin").
+      130     - drug: the name as written.
+      131     - status: "current" if the patient is taking or maintained 
+           on it (including a medication-list line in the note); "discont
+           inued" if it was stopped or the patient is "not currently anti
+           coagulated"; "unknown" if the text says it is unclear or uncon
+           firmed whether the patient takes it.
+      132 +   - A planned or future hold/stop before surgery means the pa
+          +tient is current; record that instruction under anticoagulant_
+          +plans, not as discontinued. "discontinued" only means the pati
+          +ent has already stopped taking it.                            
+      133  
+      134  5. anticoagulant_plans: each documented perioperative manageme
+           nt plan for an anticoagulant.
+      135     - drug: the drug the plan is written for, as written.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The prompt edit is in, and the tests still pass. The live call failed while
+  decompressing the response body, inside the HTTP library, not in our code.
+  I'll check which decoder failed.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I've tracked this down to an environment issue: uv is picking up Anaconda's
+  outdated brotli 1.0.9 instead of the newer version httpx needs. I'll install a
+  current Brotli for this run only, without touching the project files.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 4 of 5 cases match: case_00000's Xarelto status checks out correctly as READY.
+  But case_00047 was flagged READY when it should be NOT_CLEARED—a costly false
+  positive—so I'll dig into the raw quotes in the extraction log to understand
+  why.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The 5-case run is done. 4 of 5 match their labels, but case_00047 came out
+  READY when its label is NOT_CLEARED. That's a false READY, the costliest
+  error. I haven't changed anything in response yet, and nothing from this step
+  is committed.
+
+  Your specific check: case_00000's Xarelto comes out current with a complete 
+  plan, not discontinued. Both the cardiology consult and the nursing note
+  produced "rivaroxaban current", and the plan has its pre-op hold and its
+  post-op restart, each with its own quote found in the document. The case is
+  READY, as labeled.
+
+  Case: 00000
+  Result: READY
+  Label: READY
+  What decided it: Pre-op H&P 02/21 (the 2025 wellness visit was correctly
+  marked
+  not pre-op), signed consent, Xarelto current with a complete plan
+  ────────────────────────────────────────
+  Case: 00005
+  Result: NOT_CLEARED
+  Label: same
+  What decided it: Nursing-note BP 157/117 on 03/03 beats the older structured
+  vitals; 36.7 °C converted to 98.1 °F
+  ────────────────────────────────────────
+  Case: 00024
+  Result: NEEDS_FOLLOW_UP · documentation
+  Label: same
+  What decided it: The only signed consent is for coronary bypass, but the
+  scheduled procedure is a thyroidectomy
+  ────────────────────────────────────────
+  Case: 00033
+  Result: NEEDS_FOLLOW_UP · missing data
+  Label: same
+  What decided it: Warfarin status unclear in the note, and blank on the med
+  list
+  ────────────────────────────────────────
+  Case: 00047
+  Result: READY
+  Label: NOT_CLEARED
+  What decided it: All 4 note vitals were dropped as ungrounded
+
+  What went wrong in case_00047: the model's quotes contain a control character
+  (0x17, followed by a stray "6") where the document has "°C" or "°F". The
+  numbers it extracted were correct (161/117, 37.2 °C); only the quotes were
+  corrupted. The same character came through fine in case_00005 and case_00033,
+  so this is an intermittent output glitch. The grounding check rejected those
+  quotes as designed. The real problem is what happened next: with the note
+  readings gone, the rules fell back to the older, normal structured vitals and
+  returned READY.
+
+  That exposes a gap in fail-closed. A dropped consent, H&P or plan part already
+  fails safe, because absence fails the rule. A dropped vital or anticoagulant
+  mention doesn't: losing it can only make the case look safer.
+
+  My recommendation is two fixes:
+  1. Safety net in rules.py. If a vital was dropped from a note dated on or
+     after the latest verified reading of that type, the vital check becomes
+     "unknown" (MISSING_REQUIRED_DATA). The same goes for a dropped
+     anticoagulant mention. Case_00047 would become NEEDS_FOLLOW_UP: safe,
+     though it still wouldn't match its label.
+  2. Check vitals against their values, not the model's quote. Code looks for
+     the extracted numbers in the document text itself ("161/117", or "37.2"
+     followed by a C/F unit). If they're found, the reading is kept and the
+     matching document line becomes its quote. That recovers case_00047, and
+     code then chooses the evidence for vitals.
+
+  With both, a corrupted quote can be recovered, and a reading that truly can't
+  be verified still blocks READY.
+
+  A separate environment issue: the first attempt crashed before reaching the
+  API. The uv environment picks up Anaconda's old brotli 1.0.9, and the HTTP
+  library the OpenAI SDK uses can't decompress responses with it. I got this run
+  working by adding --with 'brotli>=1.2'. make baseline, make determinism, make
+  evals and make test will probably hit the same crash. The fix is adding
+  brotli>=1.2 to the inline dependencies of run_baseline.py and run_evals.py and
+  to the Makefile's test line.
+
+  Cost of this run: about 3,300–4,200 input and 400–700 output tokens per case,
+  3–5 seconds each. Full extractions and quotes are in data/extractions.jsonl.
+
+  Should I implement both vital fixes and the brotli fix, then rerun these 5
+  before wiring into core.py?
+
+✻ Sautéed for 1m 29s · done 7:41 PM
+
+❯ Implement both vital fixes and the brotli fix. two notes: 1.for the safety    
+  net on anticoagulant mentions, any dropped mention should block READY,        
+  regardless of date.2. Add a unit test that locks in the safety property: a    
+  dropped vital newer than the verified readings must yield NEEDS_FOLLOW_UP,    
+  never READY.                                                                  
+  Then rerun the 5 cases. Expect 00047 to be NOT_CLEARED via the value check.   
+
+⏺ I'll start with rules.py: a new UnverifiedFact input and the two safety-net
+  checks.
+
+⏺ Update(rules.py)
+  ⎿  Added 14 lines
+       95      source: Source
+       96  
+       97  
+       98 +class UnverifiedFact(BaseModel):                              
+       99 +    """A fact the model reported but grounding could not verif
+          +y.                                                            
+      100 +                                                              
+      101 +    Absence of most facts already fails closed (no consent -> 
+          +FAIL). Dropping a vital or                                    
+      102 +    an anticoagulant mention could instead make a case look sa
+          +fer, so these are kept                                        
+      103 +    here and block READY.                                     
+      104 +    """                                                       
+      105 +                                                              
+      106 +    kind: Literal["bp", "temp", "anticoag"]                   
+      107 +    date: dt.date | None                                      
+      108 +    reason: str                                               
+      109 +    source: Source                                            
+      110 +                                                              
+      111 +                                                              
+      112  class CaseFacts(BaseModel):
+      113      procedure_source: Source
+      114      procedure_date: dt.date | None
+
+⏺ Update(rules.py)
+  ⎿  Added 1 line
+      119      vitals: list[VitalReading] = Field(default_factory=list)
+      120      anticoag: list[AnticoagEvidence] = Field(default_factory=l
+           ist)
+      121      anticoag_plans: list[AnticoagPlan] = Field(default_factory
+           =list)
+      122 +    unverified: list[UnverifiedFact] = Field(default_factory=l
+          +ist)                                                          
+      123      documents_searched: int = 0  # all submission documents, f
+           or absence evidence
+      124  
+      125      @property
+
+⏺ Update(rules.py)
+  ⎿  Added 13 lines
+      368          ]
+      369  
+      370      checks: list[Check] = []
+      371 +    unverified = [u for u in facts.unverified if u.kind == "an
+          +ticoag"]                                                      
+      372 +    if unverified:                                            
+      373 +        # Any unverifiable anticoagulant statement blocks READ
+          +Y, whatever its date.                                         
+      374 +        checks.append(                                        
+      375 +            Check(                                            
+      376 +                rule="3 Anticoagulation: unverified mention", 
+      377 +                category="MISSING_REQUIRED_DATA",             
+      378 +                status="UNKNOWN",                             
+      379 +                evidence=f"{len(unverified)} anticoagulant men
+          +tion(s) could not be verified "                               
+      380 +                "against the document text; status must be con
+          +firmed.",                                                     
+      381 +                sources=[u.source for u in unverified],       
+      382 +            )                                                 
+      383 +        )                                                     
+      384      for drug in sorted({e.drug for e in facts.anticoag}):
+      385          rule = f"3 Anticoagulation plan: {drug}"
+      386          evidence = [e for e in facts.anticoag if e.drug == dru
+           g]
+
+⏺ Update(rules.py)
+  ⎿  Added 1 line, removed 1 line
+      357  
+      358  def check_anticoag(facts: CaseFacts) -> list[Check]:
+      359      category: IssueCategory = "ANTICOAGULATION_MANAGEMENT"
+      360 -    if not facts.anticoag:                                    
+      360 +    if not facts.anticoag and not any(u.kind == "anticoag" for
+          + u in facts.unverified):                                      
+      361          return [
+      362              Check(
+      363                  rule="3 Anticoagulation",
+
+⏺ Now the vitals safety net. I'll re-read check_vitals to restructure it.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+⏺ I'll add a helper so both vital checks consult it first, ensuring an
+  unverified reading at or after the latest verified one overrides the normal
+  check—preventing a misleading "most recent BP … PASS" from showing.
+
+⏺ Update(rules.py)
+  ⎿  Added 32 lines, removed 1 line
+      495      return f"{when} ({r.source.type or r.source.kind})"
+      496  
+      497  
+      498 +def _unverified_reading_check(                                
+      499 +    facts: CaseFacts, kind: Literal["bp", "temp"], latest: Vit
+          +alReading | None, rule: str                                   
+      500 +) -> Check | None:                                            
+      501 +    """UNKNOWN if an unverified reading may be the most recent
+          + one; else None.                                              
+      502 +                                                              
+      503 +    Document dates have no time, so a same-day unverified read
+          +ing counts as possibly newer.                                 
+      504 +    """                                                       
+      505 +                                                              
+      506 +    newer = [                                                 
+      507 +        u                                                     
+      508 +        for u in facts.unverified                             
+      509 +        if u.kind == kind and (latest is None or u.date is Non
+          +e or u.date >= latest.date)                                   
+      510 +    ]                                                         
+      511 +    if not newer:                                             
+      512 +        return None                                           
+      513 +    name = "blood pressure" if kind == "bp" else "temperature"
+      514 +    baseline = f"the latest verified reading ({_reading_label(
+          +latest)})" if latest else (                                   
+      515 +        "any verified reading"                                
+      516 +    )                                                         
+      517 +    return Check(                                             
+      518 +        rule=rule,                                            
+      519 +        category="MISSING_REQUIRED_DATA",                     
+      520 +        status="UNKNOWN",                                     
+      521 +        evidence=f"{len(newer)} {name} reading(s) could not be
+          + verified against the document "                              
+      522 +        f"text and may be newer than {baseline}; most recent v
+          +alue unknown.",                                               
+      523 +        sources=[u.source for u in newer],                    
+      524 +    )                                                         
+      525 +                                                              
+      526 +                                                              
+      527  def check_vitals(facts: CaseFacts) -> list[Check]:
+      528      checks: list[Check] = []
+      529  
+     ...
+      531          [v for v in facts.vitals if v.kind == "bp" and (v.syst
+           olic or v.diastolic)]
+      532      )
+      533      rule = "4.1 Blood pressure"
+      505 -    if bp is None:                                            
+      534 +    if unverified := _unverified_reading_check(facts, "bp", bp
+          +, rule):                                                      
+      535 +        checks.append(unverified)                             
+      536 +    elif bp is None:                                          
+      537          checks.append(
+      538              Check(
+      539                  rule=rule,
+
+⏺ Update(rules.py)
+  ⎿  Added 3 lines, removed 1 line
+      567  
+      568      temp = latest_reading([v for v in facts.vitals if v.kind =
+           = "temp" and v.temp_f is not None])
+      569      rule = "4.2 Temperature"
+      570 -    if temp is None:                                          
+      570 +    if unverified := _unverified_reading_check(facts, "temp", 
+          +temp, rule):                                                  
+      571 +        checks.append(unverified)                             
+      572 +    elif temp is None:                                        
+      573          checks.append(
+      574              Check(
+      575                  rule=rule,
+
+⏺ Now extract.py: value-based grounding for vitals, plus unverified facts for
+  dropped vitals and anticoagulant mentions. I'll re-read the grounding section
+  first.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(extract.py)  ⎿  Added 39 lines, removed 5 lines
+      249      def drop(self, kind: str, doc_id: str, quote: str | None, 
+           reason: str) -> None:
+      250          self.drops.append(Drop(kind=kind, doc_id=doc_id, quote
+           =quote, reason=reason))
+      251  
+      252 +    def grounds(self, doc_id: str, quote: str | None) -> bool:
+      253 +        """Quote check without recording a drop."""           
+      254 +                                                              
+      255 +        return bool(                                          
+      256 +            doc_id in self.docs                               
+      257 +            and quote                                         
+      258 +            and normalize_text(quote)                         
+      259 +            and normalize_text(quote) in self._text[doc_id]   
+      260 +        )                                                     
+      261 +                                                              
+      262      def source(self, doc_id: str, value: str) -> Source:
+      253 -        doc = self.docs[doc_id]                               
+      263 +        doc = self.docs.get(doc_id)                           
+      264 +        if doc is None:                                       
+      265 +            return Source(kind="document", id=doc_id, value=va
+          +lue)                                                          
+      266          return Source(kind="document", id=doc_id, type=doc.typ
+           e, date=doc.date, value=value)
+      267  
+      268 +    def find_vital_line(self, v: NoteVital) -> str | None:    
+      269 +        """The document line that contains the extracted vital
+          + values, found by code."""                                    
+      270  
+      257 -def _numbers_in(quote: str, *values: float | int | None) -> bo
+          -ol:                                                           
+      258 -    """Every extracted number must literally appear in its quo
+          -te."""                                                        
+      271 +        doc = self.docs.get(v.doc_id)                         
+      272 +        if doc is None:                                       
+      273 +            return None                                       
+      274 +        for line in (doc.text or "").splitlines():            
+      275 +            if v.kind == "bp" and v.systolic is not None and v
+          +.diastolic is not None:                                       
+      276 +                if re.search(rf"(?<![\d.]){v.systolic}\s*/\s*{
+          +v.diastolic}(?![\d.])", line):                                
+      277 +                    return line.strip()                       
+      278 +            elif v.kind == "temp" and v.temp_value is not None
+          + and v.temp_unit is not None:                                 
+      279 +                for number, unit in _TEMP_PATTERN.findall(line
+          +):                                                            
+      280 +                    if float(number) == float(v.temp_value) an
+          +d unit.upper() == v.temp_unit:                                
+      281 +                        return line.strip()                   
+      282 +        return None                                           
+      283  
+      260 -    found = {float(n) for n in re.findall(r"\d+(?:\.\d+)?", qu
+          -ote)}                                                         
+      261 -    return all(v is None or float(v) in found for v in values)
+      284  
+      285 +_TEMP_PATTERN = re.compile(r"(?<![\d.])(\d{2,3}(?:\.\d+)?)\s*°
+          +?\s*([FfCc])\b")                                              
+      286  
+      287 +                                                              
+      288 +class VitalEvidence(BaseModel):                               
+      289 +    """Sidecar record of how a note vital was verified."""    
+      290 +                                                              
+      291 +    doc_id: str                                               
+      292 +    kind: str                                                 
+      293 +    model_quote: str                                          
+      294 +    model_quote_grounded: bool                                
+      295 +    document_line: str                                        
+      296 +                                                              
+      297 +                                                              
+      298  def _parse_hhmm(value: str | None) -> dt.time | None:
+      299      if not value:
+      300          return None
+
+⏺ Update(extract.py)
+  ⎿  Added 17 lines
+      316      vitals: list[VitalReading]
+      317      anticoag: list[AnticoagEvidence]
+      318      anticoag_plans: list[AnticoagPlan]
+      319 +    unverified: list[UnverifiedFact]                          
+      320 +    vital_evidence: list[VitalEvidence]                       
+      321      drops: list[Drop]
+      322  
+      323  
+     ...
+      328      vitals: list[VitalReading] = []
+      329      anticoag: list[AnticoagEvidence] = []
+      330      plans: list[AnticoagPlan] = []
+      331 +    unverified: list[UnverifiedFact] = []                     
+      332 +    vital_evidence: list[VitalEvidence] = []                  
+      333  
+      334 +    def unverify(kind: Literal["bp", "temp", "anticoag"], doc_
+          +id: str, quote: str | None,                                   
+      335 +                 reason: str, value: str) -> None:            
+      336 +        g.drop("vital" if kind != "anticoag" else "anticoag_me
+          +ntion", doc_id, quote, reason)                                
+      337 +        doc = g.docs.get(doc_id)                              
+      338 +        unverified.append(                                    
+      339 +            UnverifiedFact(                                   
+      340 +                kind=kind,                                    
+      341 +                date=parse_date(doc.date) if doc else None,   
+      342 +                reason=reason,                                
+      343 +                source=g.source(doc_id, f"unverified: {value}"
+          +),                                                            
+      344 +            )                                                 
+      345 +        )                                                     
+      346 +                                                              
+      347      for hp in extraction.hp_candidates:
+      348          if g.check("hp", hp.doc_id, hp.quote):
+      349              label = "pre-op H&P" if hp.is_preop_hp else "H&P, 
+           not pre-op"
+
+⏺ Update(extract.py)
+  ⎿  Added 26 lines, removed 11 lines
+      371                  )
+      372              )
+      373  
+      374 +    # Vitals are verified by their values: code finds the docu
+          +ment line containing the                                      
+      375 +    # extracted numbers and unit, so a garbled model quote can
+          +'t lose a real reading.                                       
+      376      for v in extraction.vitals:
+      375 -        if not g.check("vital", v.doc_id, v.quote):           
+      376 -            continue                                          
+      377 -        day = parse_date(g.docs[v.doc_id].date)               
+      377          reading_time = _parse_hhmm(v.time)
+      378          at = f" at {reading_time.strftime('%H:%M')}" if readin
+           g_time else ""
+      379 +        if v.kind == "bp":                                    
+      380 +            value = f"BP {v.systolic}/{v.diastolic}{at}"      
+      381 +        else:                                                 
+      382 +            value = f"Temp {v.temp_value}{v.temp_unit or ''}{a
+          +t}"                                                           
+      383 +                                                              
+      384 +        if v.doc_id not in g.docs:                            
+      385 +            unverify(v.kind, v.doc_id, v.quote, "unknown doc_i
+          +d", value)                                                    
+      386 +            continue                                          
+      387 +        line = g.find_vital_line(v)                           
+      388 +        if line is None:                                      
+      389 +            unverify(v.kind, v.doc_id, v.quote, "values not fo
+          +und in document", value)                                      
+      390 +            continue                                          
+      391 +        day = parse_date(g.docs[v.doc_id].date)               
+      392          if day is None:
+      381 -            g.drop("vital", v.doc_id, v.quote, "undated docume
+          -nt")                                                          
+      393 +            unverify(v.kind, v.doc_id, v.quote, "undated docum
+          +ent", value)                                                  
+      394              continue
+      395 +        vital_evidence.append(                                
+      396 +            VitalEvidence(                                    
+      397 +                doc_id=v.doc_id,                              
+      398 +                kind=v.kind,                                  
+      399 +                model_quote=v.quote,                          
+      400 +                model_quote_grounded=g.grounds(v.doc_id, v.quo
+          +te),                                                          
+      401 +                document_line=line,                           
+      402 +            )                                                 
+      403 +        )                                                     
+      404 +                                                              
+      405          if v.kind == "bp":
+      384 -            if v.systolic is None and v.diastolic is None:    
+      385 -                g.drop("vital", v.doc_id, v.quote, "no BP valu
+          -es")                                                          
+      386 -                continue                                      
+      387 -            if not _numbers_in(v.quote, v.systolic, v.diastoli
+          -c):                                                           
+      388 -                g.drop("vital", v.doc_id, v.quote, "values not
+          - in quote")                                                   
+      389 -                continue                                      
+      390 -            value = f"BP {v.systolic}/{v.diastolic}{at}"      
+      406              reading = VitalReading(
+      407                  kind="bp",
+      408                  source=g.source(v.doc_id, value),
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line, removed 6 lines
+      414                  diastolic=v.diastolic,
+      415              )
+      416          else:
+      417 -            if v.temp_value is None or v.temp_unit is None:   
+      418 -                g.drop("vital", v.doc_id, v.quote, "no tempera
+          -ture value or unit")                                          
+      419 -                continue                                      
+      420 -            if not _numbers_in(v.quote, v.temp_value):        
+      421 -                g.drop("vital", v.doc_id, v.quote, "values not
+          - in quote")                                                   
+      422 -                continue                                      
+      417 +            assert v.temp_value is not None  # find_vital_line
+          + matched a value and unit                                     
+      418              if v.temp_unit == "C":
+      419                  temp_f = celsius_to_fahrenheit(v.temp_value)
+      420                  value = f"Temp {v.temp_value:g}°C ({temp_f:.1f
+           }°F){at}"
+
+⏺ Update(extract.py)
+  ⎿  Added 5 lines, removed 2 lines
+      433          vitals.append(reading)
+      434  
+      435      for m in extraction.anticoagulant_mentions:
+      436 -        if not g.check("anticoag_mention", m.doc_id, m.quote):
+      437 -            continue                                          
+      436          generic = anticoagulant_generic(m.drug)
+      437          if generic is None:
+      438 +            # A classification miss (e.g. aspirin), not a grou
+          +nding failure: doesn't block READY.                           
+      439              g.drop("anticoag_mention", m.doc_id, m.quote, f"no
+           t an anticoagulant: {m.drug}")
+      440              continue
+      441 +        if not g.grounds(m.doc_id, m.quote):                  
+      442 +            reason = "unknown doc_id" if m.doc_id not in g.doc
+          +s else "quote not in document"                                
+      443 +            unverify("anticoag", m.doc_id, m.quote, reason, f"
+          +{generic} {m.status}")                                        
+      444 +            continue                                          
+      445          anticoag.append(
+      446              AnticoagEvidence(
+      447                  drug=generic,
+
+⏺ Update(extract.py)
+  ⎿  Added 2 lines
+      487          vitals=vitals,
+      488          anticoag=anticoag,
+      489          anticoag_plans=plans,
+      490 +        unverified=unverified,                                
+      491 +        vital_evidence=vital_evidence,                        
+      492          drops=g.drops,
+      493      )
+      494  
+
+⏺ Update(extract.py)
+  ⎿  Added 2 lines
+      502          "case_id": case_id,
+      503          **meta,
+      504          "extraction": extraction.model_dump(),
+      505 +        "vital_evidence": [e.model_dump() for e in grounded.vi
+          +tal_evidence],                                                
+      506          "drops": [d.model_dump() for d in grounded.drops],
+      507          "drop_count": len(grounded.drops),
+      508 +        "unverified_count": len(grounded.unverified),         
+      509      }
+      510  
+      511  
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line
+      519              "vitals": [*structured.vitals, *grounded.vitals],
+      520              "anticoag": [*structured.anticoag, *grounded.antic
+           oag],
+      521              "anticoag_plans": grounded.anticoag_plans,
+      522 +            "unverified": grounded.unverified,                
+      523          }
+      524      )
+      525  
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line
+      27      ConsentFact,
+      28      HPFact,
+      29      Source,
+      30 +    UnverifiedFact,                                            
+      31      VitalReading,
+      32  )
+      33  
+
+⏺ Now the brotli fix, the CLI output, and the tests.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Update(extract.py)
+  ⎿  Added 6 lines
+      568                        f"{fact.source.value} (order {fact.note_
+           order})")
+      569              for fact in grounded.anticoag:
+      570                  print(f"  {'anticoag':15} {fact.source.id[:8]}
+            {fact.source.date}  {fact.source.value}")
+      571 +            for ev in grounded.vital_evidence:                
+      572 +                if not ev.model_quote_grounded:               
+      573 +                    print(f"  VALUE-VERIFIED {ev.kind} {ev.doc
+          +_id[:8]}: model quote "                                       
+      574 +                          f"{ev.model_quote!r} -> document lin
+          +e {ev.document_line!r}")                                      
+      575              for drop in grounded.drops:
+      576                  print(f"  DROP {drop.kind} {drop.doc_id[:8]}: 
+           {drop.reason}: {drop.quote!r}")
+      577 +            for u in grounded.unverified:                     
+      578 +                print(f"  UNVERIFIED (blocks READY) {u.kind} {
+          +u.source.id[:8]} {u.date}: {u.reason}")                       
+      579              got = sorted({i.category for i in result.issues})
+      580              ok = result.decision == label["decision"] and got 
+           == sorted(set(label["categories"]))
+      581              print(f"  -> {result.decision} {got}   label {labe
+           l['decision']} "
+
+⏺ Those diffs are my own edits. Now updating tests/test_extract.py for the new
+  behavior:
+
+⏺ Update(tests/test_extract.py)
+  ⎿  Added 68 lines, removed 5 lines
+       99          ("nurse-1", "Patient reports taking Eliquis daily", "q
+           uote not in document"),
+      100          ("consent-1", "Patient also reports taking Eliquis 5 m
+           g", "quote not in document"),
+      101          ("no-such-doc", "Patient also reports taking Eliquis 5
+            mg", "unknown doc_id"),
+      102 -        ("nurse-1", "   ", "empty quote"),                    
+      102 +        ("nurse-1", "   ", "quote not in document"),          
+      103      ],
+      104  )
+      105 -def test_ungrounded_fact_is_dropped_and_counted(doc_id: str, q
+          -uote: str, reason: str) -> None:                              
+      105 +def test_ungrounded_anticoag_mention_is_dropped_and_kept_as_un
+          +verified(                                                     
+      106 +    doc_id: str, quote: str, reason: str                      
+      107 +) -> None:                                                    
+      108      mention = AnticoagMention(doc_id=doc_id, quote=quote, drug
+           ="Eliquis", status="current")
+      109      grounded = ground(empty_extraction(anticoagulant_mentions=
+           [mention]), DOCS)
+      110  
+      111      assert grounded.anticoag == []
+      112      assert [(d.kind, d.reason) for d in grounded.drops] == [("
+           anticoag_mention", reason)]
+      113 +    [unverified] = grounded.unverified                        
+      114 +    assert (unverified.kind, unverified.reason) == ("anticoag"
+          +, reason)                                                     
+      115 +    assert unverified.source.id == doc_id                     
+      116  
+      117  
+      113 -def test_vital_values_must_appear_in_quote() -> None:         
+      114 -    wrong = bp_vital("BP was rechecked at 10:36: BP 183/104", 
+          -193, 104, 2, "10:36")                                         
+      118 +def test_ungrounded_consent_is_dropped_but_not_unverified() ->
+          + None:                                                        
+      119 +    # Absence already fails closed for consents, so no safety-
+          +net entry is needed.                                          
+      120 +    consent = ConsentExtract(                                 
+      121 +        doc_id="consent-1", quote="Patient signature: /s/ sign
+          +ed", signed="true",                                           
+      122 +        procedure_named="carpal tunnel release", matches_sched
+          +uled_procedure="yes",                                         
+      123 +    )                                                         
+      124 +    grounded = ground(empty_extraction(consents=[consent]), DO
+          +CS)                                                           
+      125 +                                                              
+      126 +    assert grounded.consents == []                            
+      127 +    assert grounded.drops[0].reason == "quote not in document"
+      128 +    assert grounded.unverified == []                          
+      129 +                                                              
+      130 +                                                              
+      131 +def test_vital_with_values_not_in_document_is_unverified() -> 
+          +None:                                                         
+      132 +    wrong = bp_vital("BP was rechecked at 10:36: BP 193/104", 
+          +193, 104, 2, "10:36")                                         
+      133      grounded = ground(empty_extraction(vitals=[wrong]), DOCS)
+      134  
+      135      assert grounded.vitals == []
+      118 -    assert grounded.drops[0].reason == "values not in quote"  
+      136 +    assert grounded.drops[0].reason == "values not found in do
+          +cument"                                                       
+      137 +    [unverified] = grounded.unverified                        
+      138 +    assert (unverified.kind, unverified.date) == ("bp", dt.dat
+          +e(2026, 2, 28))                                               
+      139  
+      140  
+      141 +def test_garbled_quote_with_real_values_is_verified_by_value()
+          + -> None:                                                     
+      142 +    # case_00047: the model emitted a control character where 
+          +the note has "°C"                                             
+      143 +    doc = Document(                                           
+      144 +        doc_id="n47", type="Nursing Pre-procedure Assessment",
+          + date="2026-02-28",                                           
+      145 +        text="VITAL SIGNS:\n  09:05  BP: 161/117, 37.2 °C tymp
+          +anic, HR 84, SpO2 95% RA",                                    
+      146 +    )                                                         
+      147 +    garbled = "09:05  BP: 161/117, 37.2 \x176 tympanic"       
+      148 +    vitals = [                                                
+      149 +        NoteVital(doc_id="n47", quote=garbled, kind="bp", syst
+          +olic=161, diastolic=117,                                      
+      150 +                  temp_value=None, temp_unit=None, time="09:05
+          +", order_in_note=1),                                          
+      151 +        NoteVital(doc_id="n47", quote=garbled, kind="temp", sy
+          +stolic=None, diastolic=None,                                  
+      152 +                  temp_value=37.2, temp_unit="C", time="09:05"
+          +, order_in_note=1),                                           
+      153 +    ]                                                         
+      154 +    grounded = ground(empty_extraction(vitals=vitals), [doc]) 
+      155 +                                                              
+      156 +    assert grounded.drops == [] and grounded.unverified == [] 
+      157 +    bp, temp = grounded.vitals                                
+      158 +    assert (bp.systolic, bp.diastolic) == (161, 117)          
+      159 +    assert temp.temp_f == 99.0                                
+      160 +    for evidence in grounded.vital_evidence:                  
+      161 +        assert not evidence.model_quote_grounded              
+      162 +        assert evidence.document_line == "09:05  BP: 161/117, 
+          +37.2 °C tympanic, HR 84, SpO2 95% RA"                         
+      163 +                                                              
+      164 +                                                              
+      165 +@pytest.mark.parametrize(                                     
+      166 +    ("text", "value", "unit", "found"),                       
+      167 +    [                                                         
+      168 +        ("T 99.1 F, HR 76", 99.1, "F", True),                 
+      169 +        ("Temp: 37.2C. 9 min later", 37.2, "C", True),        
+      170 +        ("Temperature 98.8 °F (oral)", 98.8, "F", True),      
+      171 +        ("Temperature 98.8 °F (oral)", 98.8, "C", False),  # u
+          +nit must match                                                
+      172 +        ("Temperature 98.8 °F (oral)", 98.0, "F", False),     
+      173 +        ("HR 99, SpO2 98% RA", 99.0, "F", False),  # a number 
+          +without a unit is not a temp                                  
+      174 +    ],                                                        
+      175 +)                                                             
+      176 +def test_temperature_value_search(text: str, value: float, uni
+          +t: str, found: bool) -> None:                                 
+      177 +    doc = Document(doc_id="t", type="Note", date="2026-03-01",
+          + text=text)                                                   
+      178 +    vital = NoteVital(doc_id="t", quote="x", kind="temp", syst
+          +olic=None, diastolic=None,                                    
+      179 +                      temp_value=value, temp_unit=unit, time=N
+          +one, order_in_note=1)                                         
+      180 +                                                              
+      181 +    assert bool(ground(empty_extraction(vitals=[vital]), [doc]
+          +).vitals) is found                                            
+      182 +                                                              
+      183 +                                                              
+      184  def test_note_vitals_use_document_date_time_and_order() -> Non
+           e:
+      185      vitals = [
+      186          bp_vital("On arrival at 10:12: NIBP 192/106", 192, 106
+           , 1, "10:12"),
+
+⏺ Update(tests/test_extract.py)
+  ⎿  Added 1 line
+      257  
+      258      assert grounded.anticoag == []
+      259      assert grounded.drops[0].reason == "not an anticoagulant: 
+           ASA"
+      260 +    assert grounded.unverified == []  # classification miss, n
+          +ot a grounding failure                                        
+      261  
+      262  
+      263  # -------------------------
+
+⏺ Update(tests/test_rules.py)
+  ⎿  Added 54 lines
+      581      assert check(result, "4.2").status == "UNKNOWN"
+      582  
+      583  
+      584 +# -------------------------                                   
+      585 +# Safety net: unverified facts never yield READY              
+      586 +# -------------------------                                   
+      587 +                                                              
+      588 +                                                              
+      589 +def unverified(kind: str, days_before: int | None, doc_id: str
+          + = "dropped") -> UnverifiedFact:                              
+      590 +    return UnverifiedFact(                                    
+      591 +        kind=kind,                                            
+      592 +        date=None if days_before is None else d(days_before), 
+      593 +        reason="values not found in document",                
+      594 +        source=Source(kind="document", id=doc_id),            
+      595 +    )                                                         
+      596 +                                                              
+      597 +                                                              
+      598 +@pytest.mark.parametrize("kind", ["bp", "temp"])              
+      599 +@pytest.mark.parametrize("days_before", [1, 3, None])  # newer
+          +, same day, undated                                           
+      600 +def test_dropped_vital_newer_than_verified_readings_never_yiel
+          +ds_ready(                                                     
+      601 +    kind: str, days_before: int | None                        
+      602 +) -> None:                                                    
+      603 +    # Safety property (case_00047): verified readings are norm
+          +al (3 days out), but a                                        
+      604 +    # note reading that couldn't be verified may be the most r
+          +ecent one.                                                    
+      605 +    result = evaluate(ready_facts(unverified=[unverified(kind,
+          + days_before)]))                                              
+      606 +                                                              
+      607 +    assert result.decision == "NEEDS_FOLLOW_UP"               
+      608 +    assert categories(result) == ["MISSING_REQUIRED_DATA"]    
+      609 +    vital = check(result, "4.1" if kind == "bp" else "4.2")   
+      610 +    assert vital.status == "UNKNOWN"                          
+      611 +    assert [s.id for s in vital.sources] == ["dropped"]       
+      612 +                                                              
+      613 +                                                              
+      614 +def test_dropped_vital_older_than_verified_reading_does_not_bl
+          +ock() -> None:                                                
+      615 +    result = evaluate(ready_facts(unverified=[unverified("bp",
+          + 10), unverified("temp", 10)]))                               
+      616 +                                                              
+      617 +    assert result.decision == "READY"                         
+      618 +                                                              
+      619 +                                                              
+      620 +def test_dropped_vital_with_no_verified_reading_is_missing_dat
+          +a() -> None:                                                  
+      621 +    result = evaluate(ready_facts(vitals=[bp(120, 80)], unveri
+          +fied=[unverified("temp", 20)]))                               
+      622 +                                                              
+      623 +    assert categories(result) == ["MISSING_REQUIRED_DATA"]    
+      624 +    assert "could not be verified" in check(result, "4.2").evi
+          +dence                                                         
+      625 +                                                              
+      626 +                                                              
+      627 +@pytest.mark.parametrize("days_before", [60, 1, None])        
+      628 +def test_any_dropped_anticoag_mention_blocks_ready_regardless_
+          +of_date(                                                      
+      629 +    days_before: int | None,                                  
+      630 +) -> None:                                                    
+      631 +    result = evaluate(ready_facts(unverified=[unverified("anti
+          +coag", days_before)]))                                        
+      632 +                                                              
+      633 +    assert result.decision == "NEEDS_FOLLOW_UP"               
+      634 +    assert categories(result) == ["MISSING_REQUIRED_DATA"]    
+      635 +    assert check(result, "3 Anticoagulation: unverified").stat
+          +us == "UNKNOWN"                                               
+      636 +                                                              
+      637 +                                                              
+      638  def test_absent_record_evidence_says_what_was_searched() -> No
+           ne:
+      639      result = evaluate(
+      640          ready_facts(
+
+⏺ Update(tests/test_rules.py)
+  ⎿  Added 1 line
+      18      LabRecord,
+      19      Source,
+      20      TriageResult,
+      21 +    UnverifiedFact,                                            
+      22      VitalReading,
+      23      evaluate,
+      24  )
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ The test caught a real bug. "BP 183/104." ends a sentence, and my lookahead
+  rejected the trailing period. Fixing it so only a following digit or decimal
+  part blocks a match:
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line, removed 1 line
+      274              return None
+      275          for line in (doc.text or "").splitlines():
+      276              if v.kind == "bp" and v.systolic is not None and v
+           .diastolic is not None:
+      277 -                if re.search(rf"(?<![\d.]){v.systolic}\s*/\s*{
+          -v.diastolic}(?![\d.])", line):                                
+      277 +                if re.search(rf"(?<![\d.]){v.systolic}\s*/\s*{
+          +v.diastolic}(?!\.?\d)", line):                                
+      278                      return line.strip()
+      279              elif v.kind == "temp" and v.temp_value is not None
+            and v.temp_unit is not None:
+      280                  for number, unit in _TEMP_PATTERN.findall(line
+           ):
+
+⏺ Update(tests/test_extract.py)
+  ⎿  Added 1 line
+      166      ("text", "value", "unit", "found"),
+      167      [
+      168          ("T 99.1 F, HR 76", 99.1, "F", True),
+      169 +        ("Recheck: Temp 98.6 °F 5 min later.", 98.6, "F", True
+          +),                                                            
+      170          ("Temp: 37.2C. 9 min later", 37.2, "C", True),
+      171          ("Temperature 98.8 °F (oral)", 98.8, "F", True),
+      172          ("Temperature 98.8 °F (oral)", 98.8, "C", False),  # u
+           nit must match
+
+⏺ Update(tests/test_extract.py)
+  ⎿  Added 19 lines
+      138      assert (unverified.kind, unverified.date) == ("bp", dt.dat
+           e(2026, 2, 28))
+      139  
+      140  
+      141 +@pytest.mark.parametrize(                                     
+      142 +    ("text", "found"),                                        
+      143 +    [                                                         
+      144 +        ("BP was rechecked at 10:36: BP 183/104.", True),  # s
+          +entence-ending period                                         
+      145 +        ("Blood pressure 183/104 mmHg", True),                
+      146 +        ("BP 183 / 104", True),                               
+      147 +        ("BP 183/1045", False),                               
+      148 +        ("BP 183/104.5", False),                              
+      149 +        ("BP 1183/104", False),                               
+      150 +    ],                                                        
+      151 +)                                                             
+      152 +def test_bp_value_search(text: str, found: bool) -> None:     
+      153 +    doc = Document(doc_id="b", type="Note", date="2026-03-01",
+          + text=text)                                                   
+      154 +    vital = NoteVital(doc_id="b", quote="x", kind="bp", systol
+          +ic=183, diastolic=104,                                        
+      155 +                      temp_value=None, temp_unit=None, time=No
+          +ne, order_in_note=1)                                          
+      156 +                                                              
+      157 +    assert bool(ground(empty_extraction(vitals=[vital]), [doc]
+          +).vitals) is found                                            
+      158 +                                                              
+      159 +                                                              
+      160  def test_garbled_quote_with_real_values_is_verified_by_value()
+            -> None:
+      161      # case_00047: the model emitted a control character where 
+           the note has "°C"
+      162      doc = Document(
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ All 125 tests pass. Rerunning the 5 cases now:
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ All 5 cases now match their labels. Case_00047 comes out NOT_CLEARED via the 
+  value check, as you expected: the code found "161/117" and "37.2 °C" on the
+  nursing note's 09:05 line, kept the BP 161/117, converted the temperature to
+  99.0 °F, and the diastolic of 117 triggers the exclusion. make test passes all
+  125 tests. None of this round is committed yet.
+
+  ┌───────┬──────────────────────┬───────┬──────────────────────────────────┐
+  │ Case  │        Result        │ Label │              Notes               │
+  ├───────┼──────────────────────┼───────┼──────────────────────────────────┤
+  │ 00000 │ READY                │ READY │ Xarelto still current with a     │
+  │       │                      │       │ complete plan                    │
+  ├───────┼──────────────────────┼───────┼──────────────────────────────────┤
+  │ 00005 │ NOT_CLEARED          │ same  │ Nursing-note BP 157/117          │
+  ├───────┼──────────────────────┼───────┼──────────────────────────────────┤
+  │ 00024 │ NEEDS_FOLLOW_UP ·    │ same  │ Consent is for a different       │
+  │       │ documentation        │       │ operation                        │
+  ├───────┼──────────────────────┼───────┼──────────────────────────────────┤
+  │       │ NEEDS_FOLLOW_UP ·    │       │ Warfarin status unclear; the BP  │
+  │ 00033 │ missing data         │ same  │ and temperature were checked by  │
+  │       │                      │       │ value                            │
+  ├───────┼──────────────────────┼───────┼──────────────────────────────────┤
+  │ 00047 │ NOT_CLEARED          │ same  │ All 4 note readings checked by   │
+  │       │                      │       │ value                            │
+  └───────┴──────────────────────┴───────┴──────────────────────────────────┘
+
+  What changed:
+  - Vitals are checked by their values. Code searches the document for the
+    extracted numbers: "161/117" for BP, or a temperature value with its C/F
+    unit. The document line it finds becomes the quote, logged in
+    data/extractions.jsonl next to the model's quote.
+  - Safety net in rules.py. A vital that fails the check is now recorded as
+    "unverified" rather than just dropped. If an unverified reading is dated on
+    or after the latest verified reading of that type (or has no date, or
+    there's no verified reading), that vital check becomes
+    MISSING_REQUIRED_DATA. Any unverified anticoagulant mention blocks READY
+    whatever its date, per your note. A mention dropped only because it isn't an
+    anticoagulant (like aspirin) doesn't block anything.
+  - Safety test you asked for:
+    test_dropped_vital_newer_than_verified_readings_never_yields_ready covers BP
+    and temperature, each dated newer, same day, or undated, and asserts
+    NEEDS_FOLLOW_UP. More tests cover:
+    - an older unverified reading not blocking READY
+    - unverified anticoagulant mentions blocking at any date
+    - a consent quote that fails the check is dropped without being marked
+      unverified
+    - the case_00047 corrupted quote
+  - Brotli: brotli>=1.2 is added to the dependencies of run_baseline.py and
+    run_evals.py and to the Makefile's test line.
+
+  Bug caught while testing: the first version of the BP search rejected "BP
+  183/104." because of the sentence-ending period. That would have quietly lost
+  real readings like case_00046's recheck. It's fixed, and there's a test for
+  it.
+
+  The corrupted degree sign is frequent and changes between runs. This time it
+  hit 6 of the 16 vital quotes, including case_00033, which was clean in the
+  first run, even at temperature 0. The value check now absorbs it for vitals,
+  and decisions didn't change. A quote corrupted the same way on a consent or
+  H&P would still be dropped. That fails closed, so it costs score rather than
+  safety. The drop counts per fact type in the extraction log will show whether
+  it happens across the full 50.
+
+  Next is wiring this into core.py, using the lazy import we agreed. Should I
+  commit this round first?
+
+✻ Worked for 2m 21s · done 7:46 PM
+
+❯ Yes, commit this round. Before wiring: we’ve tuned on 5 cases, so I don’t     
+  want more fixes until we measure on all 50. Wire into core.py, run make test, 
+  then make baseline evals score and make determinism. Report:                  
+  score vs. naive 70%; 2. grounding drops by fact type across all 50            
+  (especially consents and H&Ps, since the degree-sign corruption could hit     
+  them); 3. mismatched cases grouped by cause: extraction miss vs. rule bug vs. 
+  label disagreement.                                                           
+  If consent/H&P drops are significant, I’d rather fix it generally (tolerant   
+  grounding: exact match, else fuzzy text match flagged as such, numbers always 
+  exact) than patch per fact type. But show me the data first.                  
+
+  Ran 1 shell command (ctrl+o to expand)
+  ⎿  PostToolUse:Bash says: Tip: Run /ultrareview before you push to catch bugs 
+     with a cloud-based multi-agent review — 3 free reviews left.
+
+⏺ Committed as 1cacd2c. Since rules.py only depends on triage_types, I can
+  import it directly in core.py, but normalize and extract depend on core.py, so
+  I'll use lazy imports there to avoid a cycle.
+
+  Read 1 file (ctrl+o to expand)
+
+⏺ Update(core.py)
+  ⎿  Added 23 lines, removed 3 lines
+      150  
+      151      category: IssueCategory
+      152      evidence: str
+      153 +    rule: str | None = None                                   
+      154 +    sources: list[Source] = Field(default_factory=list)       
+      155  
+      156  class TriageOutput(BaseModel):
+      155 -    """Structured output contract for triage responses."""    
+      157 +    """Structured output contract for triage responses.       
+      158  
+      159 +    `checks` lists every rule evaluated, including passes, so 
+          +a nurse can verify a                                          
+      160 +    sampled READY case. Everything here is code-derived; quote
+          +s live in the sidecar.                                        
+      161 +    """                                                       
+      162 +                                                              
+      163      decision: Decision
+      164      issues: list[TriageIssue] = Field(validation_alias=AliasCh
+           oices("issues"))
+      165      explanation: str
+      166 +    checks: list[Check] = Field(default_factory=list)         
+      167  
+      168  
+      169 +class _BaselineIssue(BaseModel):                              
+      170 +                                                              
+      171 +    category: IssueCategory                                   
+      172 +    evidence: str                                             
+      173 +                                                              
+      174 +class _BaselineOutput(BaseModel):                             
+      175 +    """The original output schema, kept so the naive baseline 
+          +stays reproducible."""                                        
+      176 +                                                              
+      177 +    decision: Decision                                        
+      178 +    issues: list[_BaselineIssue]                              
+      179 +    explanation: str                                          
+      180 +                                                              
+      181 +                                                              
+      182  def triage_output_json_schema() -> dict[str, object]:
+      163 -    """Return the JSON schema used for structured model output
+          -s."""                                                         
+      183 +    """Return the JSON schema used for the baseline's structur
+          +ed model outputs."""                                          
+      184  
+      165 -    schema = TriageOutput.model_json_schema()                 
+      185 +    schema = _BaselineOutput.model_json_schema()              
+      186      return schema
+      187  
+      188  
+
+⏺ Update(core.py)
+  ⎿  Added 56 lines
+      203      return "\n".join(sections)
+      204  
+      205  
+      206 +def _as_submission(submission: dict[str, object] | PatientSubm
+          +ission) -> PatientSubmission:                                 
+      207 +    if isinstance(submission, PatientSubmission):             
+      208 +        return submission                                     
+      209 +    return PatientSubmission.model_validate(submission)       
+      210 +                                                              
+      211 +                                                              
+      212 +def triage_with_trace(                                        
+      213 +    submission: dict[str, object] | PatientSubmission,        
+      214 +    *,                                                        
+      215 +    model: str,                                               
+      216 +    case_id: str | None = None,                               
+      217 +) -> tuple[TriageOutput, dict[str, object]]:                  
+      218 +    """Triage plus the extraction trace (quotes, drops, tokens
+          +) for the sidecar log.                                        
+      219 +                                                              
+      220 +    The LLM reads (one extraction call); code decides (normali
+          +ze -> ground -> rules).                                       
+      221 +    """                                                       
+      222 +                                                              
+      223 +    # Imported here: these modules import the schemas defined 
+          +in this file.                                                 
+      224 +    from extract import call_extraction_model, ground, merge_f
+          +acts, sidecar_row                                             
+      225 +    from normalize import normalize_submission                
+      226 +                                                              
+      227 +    parsed = _as_submission(submission)                       
+      228 +    extraction, meta = call_extraction_model(parsed, model=mod
+          +el)                                                           
+      229 +    grounded = ground(extraction, parsed.documents)           
+      230 +    facts = merge_facts(normalize_submission(parsed), grounded
+          +)                                                             
+      231 +    result = evaluate(facts)                                  
+      232 +                                                              
+      233 +    output = TriageOutput(                                    
+      234 +        decision=result.decision,                             
+      235 +        issues=[                                              
+      236 +            TriageIssue(                                      
+      237 +                category=issue.category,                      
+      238 +                evidence=issue.evidence,                      
+      239 +                rule=issue.rule,                              
+      240 +                sources=issue.sources,                        
+      241 +            )                                                 
+      242 +            for issue in result.issues                        
+      243 +        ],                                                    
+      244 +        explanation=result.explanation,                       
+      245 +        checks=result.checks,                                 
+      246 +    )                                                         
+      247 +    trace = sidecar_row(case_id or "", extraction, grounded, m
+          +eta)                                                          
+      248 +    return output, trace                                      
+      249 +                                                              
+      250 +                                                              
+      251  def triage_submission(
+      252      submission: dict[str, object] | PatientSubmission,
+      253      *,
+      254      model: str,
+      255  ) -> TriageOutput:
+      256 +    """Grounded-extraction triage: see `triage_with_trace`."""
+      257 +                                                              
+      258 +    output, _ = triage_with_trace(submission, model=model)    
+      259 +    return output                                             
+      260 +                                                              
+      261 +                                                              
+      262 +def baseline_triage_submission(                               
+      263 +    submission: dict[str, object] | PatientSubmission,        
+      264 +    *,                                                        
+      265 +    model: str,                                               
+      266 +) -> TriageOutput:                                            
+      267      """Naive baseline implementation: single LLM call with JSO
+           N response output."""
+      268  
+      269      # Import lazily so core utilities remain usable without Op
+           enAI installed.
+
+⏺ Update(core.py)
+  ⎿  Added 1 line
+       6  
+       7  from pydantic import AliasChoices, BaseModel, Field
+       8  
+       9 +from rules import Check, Source, evaluate                      
+      10  from triage_types import Decision, IssueCategory, ProcedureRisk
+      11  
+      12  # -------------------------
+
+⏺ Now retarget the 3 existing tests to baseline_triage_submission, leaving their
+  assertions unchanged, and update run_baseline.py to write the extraction log:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Next, an end-to-end test of the new triage_submission with a mocked extraction
+  call:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 128 tests pass. Running the full pipeline on all 50 cases now (about 3–4
+  minutes):
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 97.33%, up from 70.0%. I'll start the determinism run in the background and
+  analyze the results while it runs.
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ Three cases mismatch. Before grouping them I'll look at the raw drops, and
+  separate real corruption (0x17) from harmless newlines in my control-character
+  count.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Background command "Run 10x determinism check" completed (exit code 0)
+
+⏺ Determinism finished, so I'll check its result and look into the remaining
+  drops: case_00015's doc_id, case_00042's "rivoraxaban", and the vitals for
+  case_00023 and case_00045 quoted from "See flowsheet" lines.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Measured on all 50 cases: the score is 97.33%, up from 70.0%, and determinism
+  is 100% across the board. There are 3 mismatches; all are extraction misses,
+  none produced a false READY, and none is a rule bug or a label disagreement.
+  Consent and H&P drops are near zero, so the data doesn't justify general
+  tolerant grounding yet. I made no fixes after wiring, per your instruction.
+  The wiring isn't committed.
+
+  1. Score
+
+  ┌──────────────────────────────────────────────┬───────┬──────────────────┐
+  │                                              │ Naive │    Grounded      │
+  │                                              │       │     pipeline     │
+  ├──────────────────────────────────────────────┼───────┼──────────────────┤
+  │ Aggregate score                              │ 70.0% │ 97.33%           │
+  ├──────────────────────────────────────────────┼───────┼──────────────────┤
+  │ JSON schema valid                            │ —     │ 100%             │
+  ├──────────────────────────────────────────────┼───────┼──────────────────┤
+  │ Decision matches label                       │ —     │ 98% (49/50)      │
+  ├──────────────────────────────────────────────┼───────┼──────────────────┤
+  │ Issue categories match label                 │ —     │ 94% (47/50)      │
+  ├──────────────────────────────────────────────┼───────┼──────────────────┤
+  │ Determinism (case_00000, 10 runs): same      │ 100%  │ 100%             │
+  │ decision                                     │       │                  │
+  ├──────────────────────────────────────────────┼───────┼──────────────────┤
+  │ Determinism: identical full output           │ 10%   │ 100%             │
+  └──────────────────────────────────────────────┴───────┴──────────────────┘
+
+  Each case averages 3,611 input and 529 output tokens and takes 3.6 seconds
+  (6.4 at most). No call needed a retry and no case errored. make test passes
+  all 128 tests.
+
+  2. Grounding drops across all 50
+
+  ┌─────────────────┬───────┬───────────────────────────────────────────────┐
+  │    Fact type    │ Drops │                     Cause                     │
+  ├─────────────────┼───────┼───────────────────────────────────────────────┤
+  │ H&P             │ 0     │ —                                             │
+  ├─────────────────┼───────┼───────────────────────────────────────────────┤
+  │                 │       │ case_00015: the model miscopied the document  │
+  │ Consent         │ 1     │ id (a chunk of it went missing); the quote    │
+  │                 │       │ itself was exact                              │
+  ├─────────────────┼───────┼───────────────────────────────────────────────┤
+  │                 │       │ case_00038: made-up mention (below).          │
+  │ Anticoagulant   │ 3     │ case_00042: two real mentions, one quote with │
+  │ mention         │       │  a typo ("rivoraxaban"), one shortened with   │
+  │                 │       │ "..."                                         │
+  ├─────────────────┼───────┼───────────────────────────────────────────────┤
+  │ Vital: values   │       │ All placeholders. The model logged "See       │
+  │ not found       │ 6     │ flowsheet" / NPO lines as vitals with no      │
+  │                 │       │ values (case_00023, case_00045)               │
+  ├─────────────────┼───────┼───────────────────────────────────────────────┤
+  │ Not an          │ 8     │ Aspirin and similar. Expected; doesn't block  │
+  │ anticoagulant   │       │ anything                                      │
+  └─────────────────┴───────┴───────────────────────────────────────────────┘
+
+  The degree-sign corruption appears only in vitals. 37 of the 135 kept note
+  vitals had a garbled quote, all with the 0x17 character, and every one was
+  recovered by the value check. No consent or H&P quote had it. In my first
+  tally I counted 2 consent quotes as corrupted; those were just line breaks,
+  which the matching ignores anyway.
+
+  3. Mismatched cases by cause
+
+  Extraction misses (3):
+  - case_00015. Got NEEDS_FOLLOW_UP / documentation; label is READY. The consent
+    was dropped because its document id was miscopied. The rules then saw no
+    consent, a false NEEDS_FOLLOW_UP. It fails safe, but it's the one wrong
+    decision.
+  - case_00038. The decision is right, but there's an extra
+    MISSING_REQUIRED_DATA. The model made up "Coumadin, status unknown", quoting
+    a paraphrase of the past-medical-history line ("Atrial fibrillation"),
+    which says nothing about Coumadin. The check rejected the quote, and the
+    rule that any dropped anticoagulant mention blocks READY then added
+    MISSING_REQUIRED_DATA.
+  - case_00042. The decision is right, but there's an extra
+    MISSING_REQUIRED_DATA. Two real rivaroxaban mentions were dropped (the typo
+    and the "..."), and the same rule added MISSING_REQUIRED_DATA. Rivaroxaban
+    was already confirmed current from the med list, with a complete plan.
+
+  Rule bugs: 0. Label disagreements: 0.
+
+  So 2 of the 3 misses come from that anticoagulant safety net doing what it was
+  told: it pays for safety with category accuracy.
+
+  A latent problem in the safety net, no effect this run: the 6 placeholder
+  vitals have no values, but they were still recorded as unverified readings. In
+  case_00023 and case_00045 they happened to be older than the verified
+  readings, so they didn't block. A placeholder on a newer note would wrongly
+  block READY. A reading with no values should simply be ignored.
+
+  What the data suggests
+
+  General tolerant grounding would only help case_00042. It wouldn't fix
+  case_00015 (an id problem, not a quote problem). It could make case_00038
+  worse: a fuzzy match might accept the paraphrased line, making a made-up fact
+  count as verified.
+
+  More targeted options, each mapped to one cause, all keeping exact matching:
+  1. Repair miscopied document ids. If the id is unknown but the quote matches
+     exactly one document, use that document. Fixes case_00015.
+  2. Require the drug's name in an anticoagulant quote. A quote that names no
+     anticoagulant isn't about one, so drop it without blocking READY. Fixes
+     case_00038.
+  3. Ignore vitals with no values instead of marking them unverified. Fixes the
+     latent problem.
+  4. Tolerant matching for anticoagulant quotes only, with a typo/"..."
+     tolerance flagged as such and numbers still exact. Fixes case_00042.
+     Alternatively, accept that miss as the price of the "any dropped mention
+     blocks" rule.
+
+  My recommendation is 1–3, while measuring 4 before deciding. Which do you want
+  me to implement?
+
+✻ Cogitated for 5m 30s · done 7:57 PM
+
+❯ Implement 1–3, skip 4. For 2, require the quote to contain the drug name or a 
+  generic anticoagulant term (“blood thinner”, “anticoagulant”). Otherwise an   
+  unnamed “her blood thinner” mention would be silently dropped, which is       
+  fail-open. I’ll accept 00042’s extra MISSING_REQUIRED_DATA as the documented  
+  cost of blocking on unverified anticoagulant mentions. Also: your point that  
+  fuzzy grounding could have accepted 00038’s fabricated mention is right, so   
+  I’m dropping tolerant grounding. Add a unit test for each of 1–3, then rerun  
+  make test, baseline, evals, score, determinism, and commit everything.        
+
+⏺ I'll implement 1–3. Item 2 needs one extra piece so your "her blood thinner"
+  concern is really closed: the drug field for such a mention, like "blood
+  thinner", doesn't map to any drug and would otherwise be silently dropped as
+  "not an anticoagulant". So a mention naming only the generic term becomes an
+  unspecified anticoagulant. It's kept, and it counts unless a named
+  anticoagulant is already known for the case.
+
+⏺ Update(normalize.py)
+  ⎿  Added 4 lines
+      46      (generic, re.compile(r"\b(" + "|".join((generic, *brands)) 
+          + r")\b", re.I))
+      47      for generic, brands in ANTICOAGULANTS.items()
+      48  ]
+      49 +# Unnamed references ("her blood thinner") must not be dropped 
+         +as "not an anticoagulant".                                     
+      50 +ANTICOAG_CLASS_PATTERN = re.compile(                           
+      51 +    r"\b(blood[- ]thinners?|anticoagulants?|anticoagulation|ant
+         +icoagulated)\b", re.I                                          
+      52 +)                                                              
+      53  
+      54  # -------------------------
+      55  # Value helpers
+
+⏺ Update(normalize.py)
+  ⎿  Added 8 lines
+      83      return None
+      84  
+      85  
+      86 +def names_anticoagulant(text: str | None) -> bool:             
+      87 +    """True if the text names an anticoagulant or uses a generi
+         +c term for one."""                                             
+      88 +                                                               
+      89 +    return bool(text) and (                                    
+      90 +        anticoagulant_generic(text) is not None or bool(ANTICOA
+         +G_CLASS_PATTERN.search(text))                                  
+      91 +    )                                                          
+      92 +                                                               
+      93 +                                                               
+      94  def celsius_to_fahrenheit(value_c: float) -> float:
+      95      return round(value_c * 9 / 5 + 32, 1)
+      96  
+
+⏺ Update(rules.py)
+  ⎿  Added 3 lines
+      78      temp_f: float | None = None
+      79  
+      80  
+      81 +UNSPECIFIED_ANTICOAGULANT = "unspecified anticoagulant"        
+      82 +                                                               
+      83 +                                                               
+      84  class AnticoagEvidence(BaseModel):
+      85      """One statement about an anticoagulant: a med list row or 
+          a note mention."""
+      86  
+
+⏺ Update(rules.py)
+  ⎿  Added 5 lines, removed 1 line
+      384                  sources=[u.source for u in unverified],
+      385              )
+      386          )
+      387 -    for drug in sorted({e.drug for e in facts.anticoag}):     
+      387 +    drugs = {e.drug for e in facts.anticoag}                  
+      388 +    if len(drugs) > 1:                                        
+      389 +        # "Her blood thinner" refers to a named drug when one 
+          +is known; evaluate that one.                                  
+      390 +        drugs.discard(UNSPECIFIED_ANTICOAGULANT)              
+      391 +    for drug in sorted(drugs):                                
+      392          rule = f"3 Anticoagulation plan: {drug}"
+      393          evidence = [e for e in facts.anticoag if e.drug == dru
+           g]
+      394          sources = [e.source for e in evidence]
+
+⏺ Now extract.py. First, document-id repair in the Grounder:
+⏺ Update(extract.py)
+  ⎿  Added 19 lines
+      234          self.docs = {d.doc_id: d for d in documents if d.doc_i
+           d}
+      235          self._text = {doc_id: normalize_text(d.text or "") for
+            doc_id, d in self.docs.items()}
+      236          self.drops: list[Drop] = []
+      237 +        self.doc_id_repairs: list[DocIdRepair] = []           
+      238  
+      239 +    def resolve(self, kind: str, doc_id: str, quote: str | Non
+          +e) -> str:                                                    
+      240 +        """Fix a miscopied doc_id when the quote appears verba
+          +tim in exactly one document.                                  
+      241 +                                                              
+      242 +        Matching stays exact; only the document pointer is rep
+          +aired. Otherwise the id is                                    
+      243 +        returned unchanged and the fact fails grounding as "un
+          +known doc_id".                                                
+      244 +        """                                                   
+      245 +                                                              
+      246 +        if doc_id in self.docs or not quote or not normalize_t
+          +ext(quote):                                                   
+      247 +            return doc_id                                     
+      248 +        needle = normalize_text(quote)                        
+      249 +        matches = [d for d, text in self._text.items() if need
+          +le in text]                                                   
+      250 +        if len(matches) != 1:                                 
+      251 +            return doc_id                                     
+      252 +        self.doc_id_repairs.append(                           
+      253 +            DocIdRepair(kind=kind, model_doc_id=doc_id, resolv
+          +ed_doc_id=matches[0])                                         
+      254 +        )                                                     
+      255 +        return matches[0]                                     
+      256 +                                                              
+      257      def check(self, kind: str, doc_id: str, quote: str | None)
+            -> bool:
+      258          if doc_id not in self.docs:
+      259              reason = "unknown doc_id"
+
+⏺ Update(extract.py)
+  ⎿  Added 6 lines
+      227      reason: str
+      228  
+      229  
+      230 +class DocIdRepair(BaseModel):                                 
+      231 +    kind: str                                                 
+      232 +    model_doc_id: str                                         
+      233 +    resolved_doc_id: str                                      
+      234 +                                                              
+      235 +                                                              
+      236  class Grounder:
+      237      """Checks quotes against their documents and records every
+            drop."""
+      238  
+
+⏺ I'll apply the repair in one pass at the top of ground(), on a copy so the
+  model's raw output stays untouched for the log:
+
+⏺ Update(extract.py)
+  ⎿  Added 14 lines
+      349  
+      350  def ground(extraction: CaseExtraction, documents: list[Documen
+           t]) -> GroundedFacts:
+      351      g = Grounder(documents)
+      352 +    # Repair miscopied doc_ids on a copy, so the sidecar keeps
+          + the model's raw output.                                      
+      353 +    extraction = extraction.model_copy(deep=True)             
+      354 +    for kind, facts in (                                      
+      355 +        ("hp", extraction.hp_candidates),                     
+      356 +        ("consent", extraction.consents),                     
+      357 +        ("vital", extraction.vitals),                         
+      358 +        ("anticoag_mention", extraction.anticoagulant_mentions
+          +),                                                            
+      359 +    ):                                                        
+      360 +        for fact in facts:                                    
+      361 +            fact.doc_id = g.resolve(kind, fact.doc_id, fact.qu
+          +ote)                                                          
+      362 +    for plan in extraction.anticoagulant_plans:               
+      363 +        quote = plan.pre_op_quote or plan.post_op_quote or pla
+          +n.deferral_quote                                              
+      364 +        plan.doc_id = g.resolve("anticoag_plan", plan.doc_id, 
+          +quote)                                                        
+      365 +                                                              
+      366      hps: list[HPFact] = []
+      367      consents: list[ConsentFact] = []
+      368      vitals: list[VitalReading] = []
+
+⏺ Update(extract.py)
+  ⎿  Added 6 lines
+      418          at = f" at {reading_time.strftime('%H:%M')}" if readin
+           g_time else ""
+      419          if v.kind == "bp":
+      420              value = f"BP {v.systolic}/{v.diastolic}{at}"
+      421 +            no_values = v.systolic is None and v.diastolic is 
+          +None                                                          
+      422          else:
+      423              value = f"Temp {v.temp_value}{v.temp_unit or ''}{a
+           t}"
+      424 +            no_values = v.temp_value is None                  
+      425 +        if no_values:                                         
+      426 +            # A placeholder ("See flowsheet") is not a reading
+          +: ignore it, don't block READY.                               
+      427 +            g.drop("vital", v.doc_id, v.quote, "no values (pla
+          +ceholder)")                                                   
+      428 +            continue                                          
+      429  
+      430          if v.doc_id not in g.docs:
+      431              unverify(v.kind, v.doc_id, v.quote, "unknown doc_i
+           d", value)
+
+⏺ Update(extract.py)
+  ⎿  Added 7 lines, removed 1 line
+      479          vitals.append(reading)
+      480  
+      481      for m in extraction.anticoagulant_mentions:
+      482 -        generic = anticoagulant_generic(m.drug)               
+      482 +        generic = anticoagulant_generic(m.drug) or anticoagula
+          +nt_generic(m.quote)                                           
+      483 +        if generic is None and names_anticoagulant(f"{m.drug} 
+          +{m.quote}"):                                                  
+      484 +            generic = UNSPECIFIED_ANTICOAGULANT  # e.g. "her b
+          +lood thinner"                                                 
+      485          if generic is None:
+      486              # A classification miss (e.g. aspirin), not a grou
+           nding failure: doesn't block READY.
+      487              g.drop("anticoag_mention", m.doc_id, m.quote, f"no
+           t an anticoagulant: {m.drug}")
+      488              continue
+      489 +        if not names_anticoagulant(m.quote):                  
+      490 +            # The quote isn't about an anticoagulant at all (e
+          +.g. a past-history line).                                     
+      491 +            g.drop("anticoag_mention", m.doc_id, m.quote, "quo
+          +te does not name an anticoagulant")                           
+      492 +            continue                                          
+      493          if not g.grounds(m.doc_id, m.quote):
+      494              reason = "unknown doc_id" if m.doc_id not in g.doc
+           s else "quote not in document"
+      495              unverify("anticoag", m.doc_id, m.quote, reason, f"
+           {generic} {m.status}")
+
+⏺ Update(extract.py)
+  ⎿  Added 6 lines, removed 1 line
+      19  from pydantic import BaseModel
+      20  
+      21  from core import Document, PatientSubmission
+      22 -from normalize import anticoagulant_generic, celsius_to_fahrenh
+         -eit, parse_date                                                
+      22 +from normalize import (                                        
+      23 +    anticoagulant_generic,                                     
+      24 +    celsius_to_fahrenheit,                                     
+      25 +    names_anticoagulant,                                       
+      26 +    parse_date,                                                
+      27 +)                                                              
+      28  from rules import (
+      29      AnticoagEvidence,
+      30      AnticoagPlan,
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line
+      31      CaseFacts,
+      32      ConsentFact,
+      33      HPFact,
+      34 +    UNSPECIFIED_ANTICOAGULANT,                                 
+      35      Source,
+      36      UnverifiedFact,
+      37      VitalReading,
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line
+      350      anticoag_plans: list[AnticoagPlan]
+      351      unverified: list[UnverifiedFact]
+      352      vital_evidence: list[VitalEvidence]
+      353 +    doc_id_repairs: list[DocIdRepair]                         
+      354      drops: list[Drop]
+      355  
+      356  
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line
+      548          anticoag_plans=plans,
+      549          unverified=unverified,
+      550          vital_evidence=vital_evidence,
+      551 +        doc_id_repairs=g.doc_id_repairs,                      
+      552          drops=g.drops,
+      553      )
+      554  
+
+⏺ Update(extract.py)
+  ⎿  Added 1 line
+      563          **meta,
+      564          "extraction": extraction.model_dump(),
+      565          "vital_evidence": [e.model_dump() for e in grounded.vi
+           tal_evidence],
+      566 +        "doc_id_repairs": [r.model_dump() for r in grounded.do
+          +c_id_repairs],                                                
+      567          "drops": [d.model_dump() for d in grounded.drops],
+      568          "drop_count": len(grounded.drops),
+      569          "unverified_count": len(grounded.unverified),
+
+⏺ I'll fix the edge case where an empty quote could bypass the name check and
+  fail open—now empty quotes will stay unverified and continue blocking READY
+  status.
+
+⏺ Update(extract.py)
+  ⎿  Added 2 lines, removed 1 line
+      493              # A classification miss (e.g. aspirin), not a grou
+           nding failure: doesn't block READY.
+      494              g.drop("anticoag_mention", m.doc_id, m.quote, f"no
+           t an anticoagulant: {m.drug}")
+      495              continue
+      496 -        if not names_anticoagulant(m.quote):                  
+      496 +        if m.quote.strip() and not names_anticoagulant(m.quote
+          +):                                                            
+      497              # The quote isn't about an anticoagulant at all (e
+           .g. a past-history line).
+      498 +            # An empty quote is not exempted: it stays unverif
+          +ied and blocks READY.                                         
+      499              g.drop("anticoag_mention", m.doc_id, m.quote, "quo
+           te does not name an anticoagulant")
+      500              continue
+      501          if not g.grounds(m.doc_id, m.quote):
+
+⏺ Now the tests. First tests/test_extract.py, one group for each of 1–3:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ That failure confirms the repair works correctly—the old test used an unknown
+  doc_id with a quote that actually exists in a document, which fix 1 now
+  resolves. I'll update that test case to use a quote that appears in no
+  document so it still properly tests the "unknown doc_id" scenario.
+
+⏺ Update(tests/test_extract.py)
+  ⎿  Added 2 lines, removed 1 line
+       98      [
+       99          ("nurse-1", "Patient reports taking Eliquis daily", "q
+           uote not in document"),
+      100          ("consent-1", "Patient also reports taking Eliquis 5 m
+           g", "quote not in document"),
+      101 -        ("no-such-doc", "Patient also reports taking Eliquis 5
+          - mg", "unknown doc_id"),                                      
+      101 +        # Unknown doc_id and a quote found nowhere, so it can'
+          +t be repaired.                                                
+      102 +        ("no-such-doc", "Patient takes Eliquis twice daily", "
+          +unknown doc_id"),                                             
+      103          ("nurse-1", "   ", "quote not in document"),
+      104      ],
+      105  )
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ All 146 pass. Running the full pipeline, evals, and scoring on all 50:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+⏺ 99.33% accuracy, with only case_00042 (an accepted discrepancy) remaining
+  unresolved. Before committing, I'll pinpoint which case triggered the one
+  "quote does not name an anticoagulant" drop, since model output can vary
+  between runs.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Before committing, I found that the new name check can fail open if a
+  misspelled drug name (like "rivoraxaban" for rivaroxaban) is the only evidence
+  — it wasn't an issue in case_00042 since the correct spelling appeared
+  elsewhere, but the gap is real. I'll commit now as requested and address this
+  typo-matching issue next.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Fixes 1–3 are in, and the score is 99.33%, up from 70.0%. Everything is
+  committed as 2255569, and make test passes all 146 tests. One gap remains in
+  fix 2, described below.
+
+  ┌─────────────────────────────────────┬──────────┬───────────┬───────────┐
+  │                                     │  Naive   │  Before   │    Now    │
+  │                                     │          │   fixes   │           │
+  ├─────────────────────────────────────┼──────────┼───────────┼───────────┤
+  │ Aggregate score                     │ 70.0%    │ 97.33%    │ 99.33%    │
+  ├─────────────────────────────────────┼──────────┼───────────┼───────────┤
+  │ Decision matches label              │ —        │ 98%       │ 100%      │
+  ├─────────────────────────────────────┼──────────┼───────────┼───────────┤
+  │ Issue categories match label        │ —        │ 94%       │ 98%       │
+  ├─────────────────────────────────────┼──────────┼───────────┼───────────┤
+  │ Determinism: same decision /        │ 100% /   │ 100% /    │ 100% /    │
+  │ identical full output               │ 10%      │ 100%      │ 100%      │
+  └─────────────────────────────────────┴──────────┴───────────┴───────────┘
+
+  Each case averages 3,611 input and 526 output tokens and takes 3.9 seconds
+  (6.1 at most).
+
+  What each fix did on the full run:
+  1. Document-id repair: case_00015's consent id was repaired, and the case is
+     now READY, matching its label. Matching is still exact; only the pointer is
+     fixed, and only when the quote appears in exactly one document.
+  2. Anticoagulant quote must name the drug or a generic term: this rejected the
+     misspelled rivaroxaban quote in case_00042 (more on that below). To keep
+     "her blood thinner" from being silently dropped, a mention like that
+     becomes an unspecified anticoagulant. If it's the only anticoagulant
+     mentioned, it needs a plan; if a named anticoagulant is known for the case,
+     the named one is checked instead. An empty quote isn't exempt: it stays
+     unverified and blocks READY.
+  3. Placeholder vitals: 2 "See flowsheet" entries were ignored instead of being
+     treated as unverified readings.
+
+  There's a unit test for each fix. I also changed one existing test case: it
+  used an unknown id with a quote that really appears in one document, which fix
+  1 now repairs, so I switched it to a quote that appears nowhere.
+
+  Remaining mismatch: case_00042 has an extra MISSING_REQUIRED_DATA, from the
+  "..."-shortened rivaroxaban quote. That's the cost you accepted.
+
+  Gap in fix 2: a misspelled drug name fails the name check. In case_00042, the
+  real mention "rivoraxaban 20 mg PO daily" was dropped without blocking. It did
+  no harm there, because rivaroxaban is also on the med list with a complete
+  plan. But if a misspelled quote were the only evidence that a patient takes an
+  anticoagulant, it would be dropped and READY wouldn't be blocked. The narrow
+  fix is to accept a near-miss spelling of a known drug name, within 1–2
+  letters, in the name check only. The quote would still have to match the
+  document exactly, so this misspelled mention would be unverified and block
+  READY rather than vanish. Accepting near-miss names doesn't reopen fuzzy
+  grounding.
+
+  Variation between runs: case_00038 didn't make up its past-history mention
+  this time, so fix 2 wasn't exercised on it in this run; its unit test covers
+  it. The degree-sign corruption hit 29 of 135 vital quotes this run, all
+  recovered by the value check.
+
+  Committed: the 4 commits on this branch cover the code, the tests, and the
+  naive_* reference files. The new run's outputs and reports are gitignored, so
+  they're local only.
+
+  Should I add the near-miss name check, or leave it as a documented limitation
+  in the README?
+
+✻ Worked for 6m 5s · done 8:08 PM
+
+❯ Add the near-miss name check with a unit test. A known fail-open path         
+  contradicts the whole fail-closed design, so I’d rather close it than         
+  document it. Run make test, then baseline, evals, and score to confirm        
+  nothing regressed, and commit. That’s the last code change.                   
+                                                                                
+  Then draft README.md to replace the starter one, about a page, plain prose,   
+  I’ll edit after. Cover: how to run it (make targets, plus run conda           
+  deactivate first because conda’s old brotli breaks the client); the approach  
+  in a few sentences (LLM extracts grounded facts, code applies the rules,      
+  scored output is code-derived and deterministic) with a link to DESIGN.md; a  
+  results table of naive vs final for score, decision match, category match,    
+  determinism exact match, and tokens/latency per case, noting the 50 cases     
+  were also my dev set. Then the key decisions we made and why: fail closed,    
+  checking the anticoag rules against the labels, the 00047 fail-open bug the   
+  5-case spot check caught and how we fixed it, dropping fuzzy grounding        
+  because of 00038, the near-miss name check, and post-procedure labs failing.  
+  Then the remaining mismatch (00042 is the accepted cost of the anticoag       
+  safety net), and next steps: held-out set, error-injection suite, false-READY 
+  rate as the main metric. Use the final run’s numbers.                         
+
+⏺ Starting with the near-miss name check in normalize.py. It accepts a word
+  within 1 edit of a known anticoagulant name, or 2 edits for names of 8+
+  letters. With a looser threshold, "hepatic" would count as a misspelled
+  "heparin" (2 edits apart), so 7-letter names get only 1.
+⏺ Update(normalize.py)
+  ⎿  Added 38 lines, removed 2 lines
+       83      return None
+       84  
+       85  
+       86 +_ANTICOAG_NAMES = sorted({n for g, brands in ANTICOAGULANTS.it
+          +ems() for n in (g, *brands)})                                 
+       87 +                                                              
+       88 +                                                              
+       89 +def _edit_distance(a: str, b: str) -> int:                    
+       90 +    previous = list(range(len(b) + 1))                        
+       91 +    for i, ca in enumerate(a, 1):                             
+       92 +        current = [i]                                         
+       93 +        for j, cb in enumerate(b, 1):                         
+       94 +            current.append(min(previous[j] + 1, current[j - 1]
+          + + 1, previous[j - 1] + (ca != cb)))                          
+       95 +        previous = current                                    
+       96 +    return previous[-1]                                       
+       97 +                                                              
+       98 +                                                              
+       99 +def near_miss_anticoagulant(text: str | None) -> str | None:  
+      100 +    """A known anticoagulant name the text misspells ("rivorax
+          +aban"), else None.                                            
+      101 +                                                              
+      102 +    Tolerance is 1 edit, or 2 for names of 8+ letters; tighter
+          + than that would miss                                         
+      103 +    typos, looser would let "hepatic" pass for "heparin".     
+      104 +    """                                                       
+      105 +                                                              
+      106 +    if not text:                                              
+      107 +        return None                                           
+      108 +    for word in re.findall(r"[a-z]{5,}", text.lower()):       
+      109 +        for name in _ANTICOAG_NAMES:                          
+      110 +            limit = 2 if len(name) >= 8 else 1                
+      111 +            if abs(len(word) - len(name)) <= limit and _edit_d
+          +istance(word, name) <= limit:                                 
+      112 +                return name                                   
+      113 +    return None                                               
+      114 +                                                              
+      115 +                                                              
+      116  def names_anticoagulant(text: str | None) -> bool:
+       87 -    """True if the text names an anticoagulant or uses a gener
+          -ic term for one."""                                           
+      117 +    """True if the text names an anticoagulant (even misspelle
+          +d) or uses a generic term.                                    
+      118  
+      119 +    Gates which mentions may be dropped without blocking READY
+          +, so it errs toward True:                                     
+      120 +    a misspelled real mention must stay unverified rather than
+          + vanish.                                                      
+      121 +    """                                                       
+      122 +                                                              
+      123      return bool(text) and (
+       90 -        anticoagulant_generic(text) is not None or bool(ANTICO
+          -AG_CLASS_PATTERN.search(text))                                
+      124 +        anticoagulant_generic(text) is not None               
+      125 +        or bool(ANTICOAG_CLASS_PATTERN.search(text))          
+      126 +        or near_miss_anticoagulant(text) is not None          
+      127      )
+      128  
+      129  
+
+⏺ Update(tests/test_normalize.py)
+  ⎿  Added 17 lines
+      175          ("PMH: Hypertension, Atrial fibrillation.", False),
+      176          ("ASA 81 mg PO daily", False),
+      177          ("", False),
+      178 +        # Near-miss spellings (case_00042) count as naming the
+          + drug.                                                        
+      179 +        ("rivoraxaban 20 mg PO daily with evening meal", True)
+          +,                                                             
+      180 +        ("Elliquis 5 mg BID", True),                          
+      181 +        ("Coumadine 5 mg daily", True),                       
+      182 +        ("warfrin 5 mg", True),                               
+      183 +        # Ordinary clinical words near a drug name must not.  
+      184 +        ("High-risk hepatic lobectomy", False),               
+      185 +        ("tissue fragment sent to pathology", False),         
+      186 +        ("Patient prefers Spanish, interpreter used", False), 
+      187      ],
+      188  )
+      189  def test_names_anticoagulant(text: str, expected: bool) -> Non
+           e:
+      190      assert names_anticoagulant(text) is expected
+      191 +                                                              
+      192 +                                                              
+      193 +@pytest.mark.parametrize(                                     
+      194 +    ("text", "expected"),                                     
+      195 +    [("rivoraxaban", "rivaroxaban"), ("Elliquis", "eliquis"), 
+          +("hepatic", None), ("heparin", "heparin")],                   
+      196 +)                                                             
+      197 +def test_near_miss_anticoagulant(text: str, expected: str | No
+          +ne) -> None:                                                  
+      198 +    assert near_miss_anticoagulant(text) == expected          
+
+⏺ Update(tests/test_normalize.py)
+  ⎿  Added 1 line
+      11      anticoagulant_generic,
+      12      celsius_to_fahrenheit,
+      13      names_anticoagulant,
+      14 +    near_miss_anticoagulant,                                   
+      15      normalize_lab_code,
+      16      normalize_submission,
+      17      parse_timestamp,
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ 158 pass. Before the live run, I'll scan every word in all 50 cases' documents
+  for ordinary words the near-miss check would wrongly accept as drug names:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ No ordinary word in the 50 cases' documents passes as a misspelled drug name.
+  Running the full regression check, plus determinism so the README has final
+  numbers:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ No regression: still 99.33%, with case_00042 the only mismatch. Committing the
+  last code change:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ I'll draft the README now, noting that the naive run's token/latency data
+  wasn't captured by the starter scripts, so I'll mark that row as "not
+  recorded" instead of making up numbers.
+
+⏺ Write(README.md)
+  ⎿  Added 40 lines, removed 72 lines
+       1 -# Pre-Op Triage Take-Home                                      
+       1 +# Pre-Op Triage                                                
+       2  
+       3 -## Objective                                                   
+       3 +## How to run                                                  
+       4  
+       5 -Implement `triage_submission(...)` in `core.py` - it is a pre-o
+         -p triage function for a single submission package. It is curren
+         -tly a naive LLM-based solution that makes a real model API call
+         -. The starter implementation intentionally does not follow some
+         - best practices in using the OpenAI API. You may use whatever f
+         -ile structure makes sense for your solution.                   
+       5 +If you use Anaconda, run `conda deactivate` first. Anaconda's B
+         +rotli 1.0.9 leaks into the uv environment and breaks response d
+         +ecompression inside the OpenAI client (`TypeError: process() ta
+         +kes no keyword arguments`). The scripts and the test target als
+         +o pin `brotli>=1.2` for the same reason.                       
+       6  
+       7 -Your output must match this schema:                            
+       7 +With `OPENAI_API_KEY` set:                                     
+       8  
+       9 -- `decision`: `READY | NEEDS_FOLLOW_UP | NOT_CLEARED`          
+      10 -- `issues[]`: `category` + evidence (how you design this is up 
+         -to you)                                                        
+      11 -- `explanation`                                                
+      12 -                                                               
+      13 -## What Is Provided                                            
+      14 -                                                               
+      15 -- `data/patients_sample_50.jsonl` includes:                    
+      16 -  - `case_id`                                                  
+      17 -  - `submission`                                               
+      18 -  - `label` (what a human labeled this case as)                
+      19 -- `run_baseline.py` runs your `triage_submission` implementatio
+         -n and writes outputs.                                          
+      20 -- `run_evals.py` scores outputs against provided `label` and ca
+         -n run determinism checks.                                      
+      21 -                                                               
+      22 -## Completion                                                  
+      23 -                                                               
+      24 -Note: this exercise is evaluated on engineering judgment. You m
+         -ay not reach a 100% score, and that is OK! We are looking to un
+         -derstand how you approached the problem and designed a working 
+         -solution.                                                      
+      25 -                                                               
+      26 -## Setup                                                       
+      27 -                                                               
+      28 -1. Confirm `uv` is installed.                                  
+      29 -                                                               
+       9  ```bash
+      31 -uv --version                                                   
+      10 +make test          # unit tests; no network                    
+      11 +make baseline      # runs triage_submission on all 50 cases -> 
+         +data/baseline_outputs.jsonl                                    
+      12 +make evals         # scores the outputs against the labels -> d
+         +ata/eval_report.json                                           
+      13 +make score         # prints the aggregate score                
+      14 +make determinism   # 10 repeated runs of one case -> data/deter
+         +minism_report.json                                             
+      15 +make report        # interactive per-case viewer               
+      16  ```
+      17  
+      34 -2. Set your OpenAI API key.                                    
+      18 +`make baseline` also writes `data/extractions.jsonl`, which hol
+         +ds each case's raw extraction with quotes, the grounding drops,
+         + tokens and latency. The original single-call implementation is
+         + kept as `baseline_triage_submission`, and its outputs and repo
+         +rts are saved in `data/naive_*`.                               
+      19  
+      36 -```bash                                                        
+      37 -export OPENAI_API_KEY="<your_api_key>"                         
+      38 -```                                                            
+      20 +## Approach                                                    
+      21  
+      40 -## Recommended Workflow                                        
+      22 +The LLM reads; code decides. One `gpt-4.1-mini` call per case e
+         +xtracts typed facts from the free-text documents: H&Ps, consent
+         +s, note vitals, anticoagulant mentions and plans. Each fact car
+         +ries a document id and a verbatim quote. Code checks every quot
+         +e against its document and drops any fact it can't verify. Dete
+         +rministic Python then normalizes the structured fields, applies
+         + the four policy rules, and builds the output. The scored outpu
+         +t is entirely code-derived: decision, issues with sources point
+         +ing to the exact record, and a list of every check including pa
+         +sses. That makes it auditable and deterministic. Quotes stay in
+         + the sidecar log, so wording drift in the model can't change th
+         +e scored output. See [DESIGN.md](DESIGN.md) for the architectur
+         +e.                                                             
+      23  
+      42 -1. Implement `triage_submission` in `core.py`.                 
+      43 -2. Run baseline outputs:                                       
+      24 +## Results                                                     
+      25  
+      45 -```bash                                                        
+      46 -make baseline                                                  
+      47 -```                                                            
+      26 +| | Naive (single LLM call) | Final |                          
+      27 +|---|---|---|                                                  
+      28 +| Aggregate score | 70.0% | **99.33%** |                       
+      29 +| Decision matches label | 62% | **100%** |                    
+      30 +| Issue categories match label | 48% | **98%** |               
+      31 +| Determinism, identical output over 10 runs | 10% | **100%** |
+      32 +| Determinism, same decision over 10 runs | 100% | 100% |      
+      33 +| Tokens per case (in / out) | not recorded | 3,611 / 530 |    
+      34 +| Latency per case (mean / max) | not recorded | 3.8 s / 6.1 s 
+         +|                                                              
+      35  
+      49 -3. Run eval scoring:                                           
+      36 +Caveat: the 50 labeled cases were also my development set. I us
+         +ed them for error analysis and the fixes below, so these number
+         +s are optimistic for unseen data. Determinism was measured on o
+         +ne case (`case_00000`), the default for `make determinism`.    
+      37  
+      51 -```bash                                                        
+      52 -make evals                                                     
+      53 -```                                                            
+      38 +## Key decisions                                               
+      39  
+      55 -4. Run determinism check:                                      
+      40 +**Fail closed.** Nurses only sample READY cases, so a false REA
+         +DY is the costly error. An unknown, missing or unverifiable fac
+         +t never yields READY. Absence fails the rule it belongs to: no 
+         +signed consent is REQUIRED_DOCUMENTATION, and no CBC is REQUIRE
+         +D_TESTING.                                                     
+      41  
+      57 -```bash                                                        
+      58 -make determinism                                               
+      59 -```                                                            
+      42 +**Rules checked against the labels.** My first anticoagulation 
+         +rule was narrower than the policy's intent. Before settling it,
+         + I checked every case that mentions an anticoagulant. One uncle
+         +ar-status case (`case_00033`) is labeled MISSING_REQUIRED_DATA,
+         + so any unclear statement without a "current" one blocks READY.
+         + Two cases where the patient reports taking an anticoagulant wi
+         +th no plan (`case_00027`, `case_00038`) are labeled ANTICOAGULA
+         +TION_MANAGEMENT, not MISSING_REQUIRED_DATA.                    
+      43  
+      61 -5. Print score:                                                
+      44 +**The 5-case spot check caught a fail-open bug.** In `case_0004
+         +7`, the model intermittently emitted a control character where 
+         +the note said "°C", so every note-vital quote failed grounding.
+         + With those readings dropped, the rules fell back to older, nor
+         +mal structured vitals and returned READY for a patient with a B
+         +P of 161/117. There were two fixes. First, vitals are now verif
+         +ied by their values: code finds the document line containing th
+         +e extracted numbers and unit. The corruption hit about a quarte
+         +r of vital quotes across the 50 cases, and all were recovered t
+         +his way. Second, an unverifiable vital that may be the most rec
+         +ent reading, or any unverifiable anticoagulant mention, now blo
+         +cks READY instead of silently disappearing. A unit test locks i
+         +n that property.                                               
+      45  
+      63 -```bash                                                        
+      64 -make score                                                     
+      65 -```                                                            
+      46 +**No fuzzy grounding.** I considered tolerant text matching for
+         + quotes. In `case_00038`, the model fabricated "Coumadin, statu
+         +s unknown" from a paraphrased past-history line that never ment
+         +ions Coumadin. Fuzzy matching could have accepted that fabricat
+         +ion as grounded, so matching stays exact. The fixes are targete
+         +d instead:                                                     
+      47 +- A miscopied document id is repaired only when the quote appea
+         +rs verbatim in exactly one document.                           
+      48 +- An anticoagulant mention whose quote names no anticoagulant i
+         +s dropped. Generic terms like "blood thinner" count, so an unna
+         +med mention is never silently lost.                            
+      49 +- Placeholder vitals ("See flowsheet") are ignored.            
+      50  
+      67 -6. View the interactive report (TUI):                          
+      51 +**Near-miss drug names.** The name check above opened a new fai
+         +l-open path. A real mention with a misspelled drug ("rivoraxaba
+         +n") failed the check and was dropped without blocking. Misspell
+         +ings within one or two letters of a known anticoagulant name no
+         +w count as naming it, so such a mention stays unverified and bl
+         +ocks READY. Grounding itself is still exact.                   
+      52  
+      69 -```bash                                                        
+      70 -make report                                                    
+      71 -```                                                            
+      53 +**Post-procedure labs fail.** If the most recent required lab i
+         +s dated after the procedure, the check fails even when an earli
+         +er result was in window. A future-dated result is a data anomal
+         +y, and the policy says to use only the most recent result.     
+      54  
+      73 -This opens a terminal UI (`view_report.py`) that shows per-case
+         - results side-by-side with oracle expectations. You can browse 
+         -records, see metric pass/fail status, and inspect submission da
+         -ta. Press `f` on a metric row to filter the case list to failur
+         -es. Press `q` to quit.                                         
+      55 +## Remaining mismatch                                          
+      56  
+      75 -## Tests                                                       
+      57 +`case_00042` gets the right decision (NEEDS_FOLLOW_UP for a sta
+         +le CBC) plus an extra MISSING_REQUIRED_DATA. One real rivaroxab
+         +an mention was quoted with an inserted "...", so it can't be ve
+         +rified, and unverified anticoagulant evidence blocks READY by d
+         +esign. This is the accepted cost of the anticoagulation safety 
+         +net.                                                           
+      58  
+      77 -Run the unit tests with:                                       
+      59 +## Next steps                                                  
+      60  
+      79 -```bash                                                        
+      80 -make test                                                      
+      81 -```                                                            
+      82 -                                                               
+      83 -## Outputs                                                     
+      84 -                                                               
+      85 -- Baseline outputs: `data/baseline_outputs.jsonl`              
+      86 -- Eval report: `data/eval_report.json`                         
+      87 -- Determinism report: `data/determinism_report.json`           
+      88 -                                                               
+      89 -## Configurable Variables                                      
+      90 -                                                               
+      91 -- `MODEL` (default `gpt-4.1-mini`)                             
+      92 -- `INPUT` (default `data/patients_sample_50.jsonl`)            
+      93 -- `OUTPUT` (default `data/baseline_outputs.jsonl`)             
+      94 -- `REPORT` (default `data/eval_report.json`)                   
+      95 -- `DETERMINISM_REPORT` (default `data/determinism_report.json`)
+      61 +- **Held-out set.** Score on labeled cases that weren't used du
+         +ring development.                                              
+      62 +- **Error-injection suite.** Mutate READY cases with known answ
+         +ers (a CBC one day past its window, diastolic exactly 110, cons
+         +ent "signature pending", latest lab entered-in-error) and run i
+         +t in CI.                                                       
+      63 +- **False-READY rate as the main metric.** Aggregate accuracy w
+         +eights all errors equally. The metric that matters for sampled 
+         +review is how often a case that should be held comes out READY.
+         + Track it per model and per prompt change.                     
+
+⏺ Before handing over, I'll check two README claims against the final run: which
+  case_00042 quote was the unverified one, and the corruption rate.
+
+  Ran 1 shell command (ctrl+o to expand)
+
+⏺ Good catch — case_00042's unverified quote is actually the misspelled one, not
+  the "..." one, so it's a live example of why the near-miss check still blocks
+  it. Fixing the README now.
+
+⏺ Update(README.md)
+  ⎿  Added 1 line, removed 1 line
+      54  
+      55  ## Remaining mismatch
+      56  
+      57 -`case_00042` gets the right decision (NEEDS_FOLLOW_UP for a sta
+         -le CBC) plus an extra MISSING_REQUIRED_DATA. One real rivaroxab
+         -an mention was quoted with an inserted "...", so it can't be ve
+         -rified, and unverified anticoagulant evidence blocks READY by d
+         -esign. This is the accepted cost of the anticoagulation safety 
+         -net.                                                           
+      57 +`case_00042` gets the right decision (NEEDS_FOLLOW_UP for a sta
+         +le CBC) plus an extra MISSING_REQUIRED_DATA. The model quoted a
+         + real rivaroxaban mention with a misspelling ("rivoraxaban"); i
+         +n earlier runs it shortened the quote with "..." instead. Eithe
+         +r way the quote can't be verified, and unverified anticoagulant
+         + evidence blocks READY by design. In the final run, the near-mi
+         +ss name check is what keeps this mention blocking rather than s
+         +ilently dropped. This is the accepted cost of the anticoagulati
+         +on safety net.                                                 
+      58  
+      59  ## Next steps
+      60  
+
+⏺ I added the near-miss name check and drafted the README. Nothing regressed,
+  and the code change is committed as 312207f. The README draft is not
+  committed, so you can edit it first.
+
+  Near-miss check:
+  - What it does: a word within 1 letter of a known anticoagulant name counts as
+    naming the drug, or within 2 letters for names of 8+ letters. The check
+    only decides which mentions can be dropped without blocking READY; quote
+    matching is still exact.
+  - Why 1 letter for shorter names: 2 would let "hepatic" pass as a misspelled
+    "heparin".
+  - No false matches in the sample: I scanned every word in the 50 cases'
+    documents, and no ordinary word passes as a misspelled drug name.
+  - Tests: they cover misspellings that should match, clinical words that
+    shouldn't, and that a misspelled real mention stays unverified and blocks
+    READY. make test passes all 158.
+
+  Final run:
+  - Score: 99.33% (unchanged), decisions 100%, categories 98%.
+  - Determinism: 100% identical output over 10 runs.
+  - Per case: 3,611 input / 530 output tokens, 3.8 s mean and 6.1 s max latency.
+
+  The near-miss check mattered on this run: case_00042's misspelled rivaroxaban
+  quote came back again, and the check is what kept it blocking instead of
+  silently dropped.
+
+  README: it follows your outline. I made the claims match the final run, and
+  two details came out of that:
+  - Naive tokens and latency say "not recorded". The starter scripts never
+    captured them, so I didn't estimate.
+  - case_00042's remaining mismatch is described as a misspelled quote. My first
+    draft said it came from the "..." quote; I checked the final run and
+    corrected it.
+
+  It also notes that determinism was measured on one case (case_00000), which is
+  what make determinism does by default.
+
+  The branch now has 5 commits after the design doc: rules, normalize,
+  extraction, wiring, and the near-miss check. Run outputs stay gitignored; only
+  the naive_* reference files are committed.
+
+✻ Worked for 5m 30s · done 8:16 PM
+
+※ recap: We replaced the naive triage with grounded LLM extraction plus code-applied rules, scoring 99.33% against the naive 70%, and all code is committed. Next, edit and commit the uncommitted README.md draft. (disable recaps in /config)
