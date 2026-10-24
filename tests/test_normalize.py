@@ -10,6 +10,7 @@ from core import PatientSubmission
 from normalize import (
     anticoagulant_generic,
     celsius_to_fahrenheit,
+    names_anticoagulant,
     normalize_lab_code,
     normalize_submission,
     parse_timestamp,
@@ -162,3 +163,19 @@ def test_all_sample_cases_normalize_and_evaluate() -> None:
         assert len(facts.vitals) == len(sub.vitals), row["case_id"]
         assert {lab.test for lab in facts.labs} <= known_tests, row["case_id"]
         evaluate(facts)  # structured-only facts must not crash the rules
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Eliquis 5 mg PO BID", True),
+        ("takes her blood thinner nightly", True),
+        ("Not currently anticoagulated.", True),
+        ("perioperative management of anticoagulation", True),
+        ("PMH: Hypertension, Atrial fibrillation.", False),
+        ("ASA 81 mg PO daily", False),
+        ("", False),
+    ],
+)
+def test_names_anticoagulant(text: str, expected: bool) -> None:
+    assert names_anticoagulant(text) is expected

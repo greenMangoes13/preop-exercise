@@ -46,6 +46,10 @@ _ANTICOAG_PATTERNS = [
     (generic, re.compile(r"\b(" + "|".join((generic, *brands)) + r")\b", re.I))
     for generic, brands in ANTICOAGULANTS.items()
 ]
+# Unnamed references ("her blood thinner") must not be dropped as "not an anticoagulant".
+ANTICOAG_CLASS_PATTERN = re.compile(
+    r"\b(blood[- ]thinners?|anticoagulants?|anticoagulation|anticoagulated)\b", re.I
+)
 
 # -------------------------
 # Value helpers
@@ -77,6 +81,14 @@ def anticoagulant_generic(name: str | None) -> str | None:
         if pattern.search(name):
             return generic
     return None
+
+
+def names_anticoagulant(text: str | None) -> bool:
+    """True if the text names an anticoagulant or uses a generic term for one."""
+
+    return bool(text) and (
+        anticoagulant_generic(text) is not None or bool(ANTICOAG_CLASS_PATTERN.search(text))
+    )
 
 
 def celsius_to_fahrenheit(value_c: float) -> float:

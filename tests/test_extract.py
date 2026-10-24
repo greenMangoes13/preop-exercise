@@ -98,7 +98,8 @@ def test_grounded_quote_survives_whitespace_and_case_differences() -> None:
     [
         ("nurse-1", "Patient reports taking Eliquis daily", "quote not in document"),
         ("consent-1", "Patient also reports taking Eliquis 5 mg", "quote not in document"),
-        ("no-such-doc", "Patient also reports taking Eliquis 5 mg", "unknown doc_id"),
+        # Unknown doc_id and a quote found nowhere, so it can't be repaired.
+        ("no-such-doc", "Patient takes Eliquis twice daily", "unknown doc_id"),
         ("nurse-1", "   ", "quote not in document"),
     ],
 )
@@ -345,3 +346,105 @@ def test_client_is_created_once_and_reused(monkeypatch: pytest.MonkeyPatch) -> N
     assert extract.get_client() is extract.get_client()
     assert created == [{"timeout": extract.REQUEST_TIMEOUT_SECONDS,
                         "max_retries": extract.TRANSPORT_RETRIES}]
+
+
+# -------------------------
+# 1. Miscopied doc_id repair (case_00015)
+# -------------------------
+
+
+def _consent(doc_id: str, quote: str) -> ConsentExtract:
+    return ConsentExtract(
+        doc_id=doc_id, quote=quote, signed="true",
+        procedure_named="carpal tunnel release", matches_scheduled_procedure="yes",
+    )
+
+
+def test_miscopied_doc_id_is_repaired_when_quote_matches_one_document() -> None:
+    real_id = "7a6123a0-7f1b-591c-94be-cf81d65bf391"
+    doc = Document(doc_id=real_id, type="Surgery Consent (scanned)", date="2026-03-06",
+                   text="Patient signature on file - signed in clinic 03/06/2026 10:16.")
+    miscopied = "7a6123a0-7f1b-5919-cf81d65bf391"  # what the model returned
+    extraction = empty_extraction(
+        consents=[_consent(miscopied, "Patient signature on file - signed in clinic 03/06/2026")]
+    )
+    grounded = ground(extraction, [doc, NURSING])
+
+    [consent] = grounded.consents
+    assert consent.source.id == real_id
+    assert grounded.drops == []
+    assert [(r.model_doc_id, r.resolved_doc_id) for r in grounded.doc_id_repairs] == [
+        (miscopied, real_id)
+    ]
+    assert extraction.consents[0].doc_id == miscopied  # raw model output left intact
+
+
+def test_doc_id_is_not_repaired_when_quote_matches_several_documents() -> None:
+    a = Document(doc_id="a", type="Consent", date="2026-03-01", text="Patient signature: /s/ A")
+    b = Document(doc_id="b", type="Consent", date="2026-03-02", text="Patient signature: /s/ A")
+    grounded = ground(empty_extraction(consents=[_consent("zzz", "Patient signature: /s/ A")]), [a, b])
+
+    assert grounded.consents == []
+    assert grounded.doc_id_repairs == []
+    assert grounded.drops[0].reason == "unknown doc_id"
+
+
+# -------------------------
+# 2. Anticoagulant mention quotes must name an anticoagulant (case_00038)
+# -------------------------
+
+
+def test_mention_whose_quote_names_no_anticoagulant_is_dropped_without_blocking() -> None:
+    doc = Document(doc_id="hp", type="H&P", date="2026-03-27",
+                   text="PAST MEDICAL HISTORY: Hypertension; Type 2 diabetes mellitus; Atrial fibrillation.")
+    mention = AnticoagMention(
+        doc_id="hp", quote="PMH: Hypertension, Type 2 diabetes mellitus, Atrial fibrillation.",
+        drug="Coumadin", status="unknown",
+    )
+    grounded = ground(empty_extraction(anticoagulant_mentions=[mention]), [doc])
+
+    assert grounded.anticoag == []
+    assert grounded.unverified == []
+    assert grounded.drops[0].reason == "quote does not name an anticoagulant"
+
+
+@pytest.mark.parametrize("drug", ["blood thinner", "unknown", "anticoagulant"])
+def test_unnamed_blood_thinner_mention_is_kept_as_unspecified(drug: str) -> None:
+    doc = Document(doc_id="n", type="Nursing", date="2026-03-01",
+                   text="Patient reports she still takes her blood thinner every evening.")
+    mention = AnticoagMention(
+        doc_id="n", quote="Patient reports she still takes her blood thinner every evening.",
+        drug=drug, status="current",
+    )
+    [evidence] = ground(empty_extraction(anticoagulant_mentions=[mention]), [doc]).anticoag
+
+    assert (evidence.drug, evidence.status) == ("unspecified anticoagulant", "current")
+
+
+def test_ungrounded_unnamed_blood_thinner_mention_blocks_ready() -> None:
+    mention = AnticoagMention(
+        doc_id="nurse-1", quote="takes her blood thinner nightly", drug="blood thinner",
+        status="current",
+    )
+    grounded = ground(empty_extraction(anticoagulant_mentions=[mention]), DOCS)
+
+    assert grounded.anticoag == []
+    [unverified] = grounded.unverified
+    assert unverified.kind == "anticoag"
+
+
+# -------------------------
+# 3. Placeholder vitals are ignored, not unverified (case_00023, case_00045)
+# -------------------------
+
+
+@pytest.mark.parametrize("kind", ["bp", "temp"])
+def test_placeholder_vital_without_values_is_ignored(kind: str) -> None:
+    doc = Document(doc_id="hp", type="H&P", date="2026-03-06", text="Vitals: See flowsheet.")
+    vital = NoteVital(doc_id="hp", quote="Vitals: See flowsheet.", kind=kind, systolic=None,
+                      diastolic=None, temp_value=None, temp_unit=None, time=None, order_in_note=1)
+    grounded = ground(empty_extraction(vitals=[vital]), [doc])
+
+    assert grounded.vitals == []
+    assert grounded.unverified == []
+    assert grounded.drops[0].reason == "no values (placeholder)"

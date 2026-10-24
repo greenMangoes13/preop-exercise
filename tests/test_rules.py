@@ -658,3 +658,25 @@ def test_absent_record_evidence_says_what_was_searched() -> None:
     )
     for prefix in ("1.2", "2 CBC", "4.2"):
         assert [s.kind for s in check(result, prefix).sources] == ["procedure"]
+
+
+def test_unspecified_anticoagulant_alone_needs_a_plan() -> None:
+    result = evaluate(
+        ready_facts(anticoag=[ac("unspecified anticoagulant", "current", from_med_list=False)])
+    )
+
+    assert categories(result) == ["ANTICOAGULATION_MANAGEMENT"]
+
+
+def test_unspecified_anticoagulant_defers_to_known_named_drug() -> None:
+    result = evaluate(
+        ready_facts(
+            anticoag=[
+                ac("apixaban", "current"),
+                ac("unspecified anticoagulant", "current", from_med_list=False),
+            ],
+            anticoag_plans=[plan("apixaban")],
+        )
+    )
+
+    assert result.decision == "READY"

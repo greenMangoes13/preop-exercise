@@ -20,7 +20,7 @@ from typing import Any
 
 from core import (
     PatientSubmission,
-    triage_submission,
+    triage_with_trace,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -45,6 +45,11 @@ def parse_args() -> argparse.Namespace:
         "--output",
         default=str(ROOT / "data" / "baseline_outputs.jsonl"),
         help="Output JSONL file with model responses",
+    )
+    parser.add_argument(
+        "--extractions",
+        default=str(ROOT / "data" / "extractions.jsonl"),
+        help="Sidecar JSONL with extraction quotes, grounding drops, tokens and latency",
     )
     parser.add_argument(
         "--model",
@@ -97,7 +102,9 @@ def main() -> None:
     if args.max_records > 0:
         cases = cases[: args.max_records]
 
-    with output_path.open("w", encoding="utf-8") as handle:
+    with output_path.open("w", encoding="utf-8") as handle, Path(args.extractions).open(
+        "w", encoding="utf-8"
+    ) as sidecar:
         for idx, case in enumerate(cases):
             print(f"[{idx + 1}/{len(cases)}] Running baseline inference")
             submission = case.submission.model_dump()
@@ -111,11 +118,14 @@ def main() -> None:
             }
 
             try:
-                output = triage_submission(
+                output, trace = triage_with_trace(
                     submission=submission,
                     model=args.model,
+                    case_id=case.case_id,
                 )
                 row["output"] = output.model_dump()
+                sidecar.write(json.dumps({"record_index": idx, **trace}, ensure_ascii=True))
+                sidecar.write("\n")
             except Exception as exc:  # pragma: no cover - network/runtime failure path
                 row["error"] = str(exc)
 

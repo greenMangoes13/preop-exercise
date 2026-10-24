@@ -6,6 +6,7 @@ import json
 
 from pydantic import AliasChoices, BaseModel, Field
 
+from rules import Check, Source, evaluate
 from triage_types import Decision, IssueCategory, ProcedureRisk
 
 # -------------------------
@@ -150,19 +151,39 @@ class TriageIssue(BaseModel):
 
     category: IssueCategory
     evidence: str
+    rule: str | None = None
+    sources: list[Source] = Field(default_factory=list)
 
 class TriageOutput(BaseModel):
-    """Structured output contract for triage responses."""
+    """Structured output contract for triage responses.
+
+    `checks` lists every rule evaluated, including passes, so a nurse can verify a
+    sampled READY case. Everything here is code-derived; quotes live in the sidecar.
+    """
 
     decision: Decision
     issues: list[TriageIssue] = Field(validation_alias=AliasChoices("issues"))
     explanation: str
+    checks: list[Check] = Field(default_factory=list)
+
+
+class _BaselineIssue(BaseModel):
+
+    category: IssueCategory
+    evidence: str
+
+class _BaselineOutput(BaseModel):
+    """The original output schema, kept so the naive baseline stays reproducible."""
+
+    decision: Decision
+    issues: list[_BaselineIssue]
+    explanation: str
 
 
 def triage_output_json_schema() -> dict[str, object]:
-    """Return the JSON schema used for structured model outputs."""
+    """Return the JSON schema used for the baseline's structured model outputs."""
 
-    schema = TriageOutput.model_json_schema()
+    schema = _BaselineOutput.model_json_schema()
     return schema
 
 
@@ -183,7 +204,63 @@ def build_user_prompt(submission: dict[str, object]) -> str:
     return "\n".join(sections)
 
 
+def _as_submission(submission: dict[str, object] | PatientSubmission) -> PatientSubmission:
+    if isinstance(submission, PatientSubmission):
+        return submission
+    return PatientSubmission.model_validate(submission)
+
+
+def triage_with_trace(
+    submission: dict[str, object] | PatientSubmission,
+    *,
+    model: str,
+    case_id: str | None = None,
+) -> tuple[TriageOutput, dict[str, object]]:
+    """Triage plus the extraction trace (quotes, drops, tokens) for the sidecar log.
+
+    The LLM reads (one extraction call); code decides (normalize -> ground -> rules).
+    """
+
+    # Imported here: these modules import the schemas defined in this file.
+    from extract import call_extraction_model, ground, merge_facts, sidecar_row
+    from normalize import normalize_submission
+
+    parsed = _as_submission(submission)
+    extraction, meta = call_extraction_model(parsed, model=model)
+    grounded = ground(extraction, parsed.documents)
+    facts = merge_facts(normalize_submission(parsed), grounded)
+    result = evaluate(facts)
+
+    output = TriageOutput(
+        decision=result.decision,
+        issues=[
+            TriageIssue(
+                category=issue.category,
+                evidence=issue.evidence,
+                rule=issue.rule,
+                sources=issue.sources,
+            )
+            for issue in result.issues
+        ],
+        explanation=result.explanation,
+        checks=result.checks,
+    )
+    trace = sidecar_row(case_id or "", extraction, grounded, meta)
+    return output, trace
+
+
 def triage_submission(
+    submission: dict[str, object] | PatientSubmission,
+    *,
+    model: str,
+) -> TriageOutput:
+    """Grounded-extraction triage: see `triage_with_trace`."""
+
+    output, _ = triage_with_trace(submission, model=model)
+    return output
+
+
+def baseline_triage_submission(
     submission: dict[str, object] | PatientSubmission,
     *,
     model: str,

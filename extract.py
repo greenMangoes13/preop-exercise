@@ -19,13 +19,19 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from core import Document, PatientSubmission
-from normalize import anticoagulant_generic, celsius_to_fahrenheit, parse_date
+from normalize import (
+    anticoagulant_generic,
+    celsius_to_fahrenheit,
+    names_anticoagulant,
+    parse_date,
+)
 from rules import (
     AnticoagEvidence,
     AnticoagPlan,
     CaseFacts,
     ConsentFact,
     HPFact,
+    UNSPECIFIED_ANTICOAGULANT,
     Source,
     UnverifiedFact,
     VitalReading,
@@ -227,6 +233,12 @@ class Drop(BaseModel):
     reason: str
 
 
+class DocIdRepair(BaseModel):
+    kind: str
+    model_doc_id: str
+    resolved_doc_id: str
+
+
 class Grounder:
     """Checks quotes against their documents and records every drop."""
 
@@ -234,6 +246,25 @@ class Grounder:
         self.docs = {d.doc_id: d for d in documents if d.doc_id}
         self._text = {doc_id: normalize_text(d.text or "") for doc_id, d in self.docs.items()}
         self.drops: list[Drop] = []
+        self.doc_id_repairs: list[DocIdRepair] = []
+
+    def resolve(self, kind: str, doc_id: str, quote: str | None) -> str:
+        """Fix a miscopied doc_id when the quote appears verbatim in exactly one document.
+
+        Matching stays exact; only the document pointer is repaired. Otherwise the id is
+        returned unchanged and the fact fails grounding as "unknown doc_id".
+        """
+
+        if doc_id in self.docs or not quote or not normalize_text(quote):
+            return doc_id
+        needle = normalize_text(quote)
+        matches = [d for d, text in self._text.items() if needle in text]
+        if len(matches) != 1:
+            return doc_id
+        self.doc_id_repairs.append(
+            DocIdRepair(kind=kind, model_doc_id=doc_id, resolved_doc_id=matches[0])
+        )
+        return matches[0]
 
     def check(self, kind: str, doc_id: str, quote: str | None) -> bool:
         if doc_id not in self.docs:
@@ -319,11 +350,26 @@ class GroundedFacts(BaseModel):
     anticoag_plans: list[AnticoagPlan]
     unverified: list[UnverifiedFact]
     vital_evidence: list[VitalEvidence]
+    doc_id_repairs: list[DocIdRepair]
     drops: list[Drop]
 
 
 def ground(extraction: CaseExtraction, documents: list[Document]) -> GroundedFacts:
     g = Grounder(documents)
+    # Repair miscopied doc_ids on a copy, so the sidecar keeps the model's raw output.
+    extraction = extraction.model_copy(deep=True)
+    for kind, facts in (
+        ("hp", extraction.hp_candidates),
+        ("consent", extraction.consents),
+        ("vital", extraction.vitals),
+        ("anticoag_mention", extraction.anticoagulant_mentions),
+    ):
+        for fact in facts:
+            fact.doc_id = g.resolve(kind, fact.doc_id, fact.quote)
+    for plan in extraction.anticoagulant_plans:
+        quote = plan.pre_op_quote or plan.post_op_quote or plan.deferral_quote
+        plan.doc_id = g.resolve("anticoag_plan", plan.doc_id, quote)
+
     hps: list[HPFact] = []
     consents: list[ConsentFact] = []
     vitals: list[VitalReading] = []
@@ -379,8 +425,14 @@ def ground(extraction: CaseExtraction, documents: list[Document]) -> GroundedFac
         at = f" at {reading_time.strftime('%H:%M')}" if reading_time else ""
         if v.kind == "bp":
             value = f"BP {v.systolic}/{v.diastolic}{at}"
+            no_values = v.systolic is None and v.diastolic is None
         else:
             value = f"Temp {v.temp_value}{v.temp_unit or ''}{at}"
+            no_values = v.temp_value is None
+        if no_values:
+            # A placeholder ("See flowsheet") is not a reading: ignore it, don't block READY.
+            g.drop("vital", v.doc_id, v.quote, "no values (placeholder)")
+            continue
 
         if v.doc_id not in g.docs:
             unverify(v.kind, v.doc_id, v.quote, "unknown doc_id", value)
@@ -434,10 +486,17 @@ def ground(extraction: CaseExtraction, documents: list[Document]) -> GroundedFac
         vitals.append(reading)
 
     for m in extraction.anticoagulant_mentions:
-        generic = anticoagulant_generic(m.drug)
+        generic = anticoagulant_generic(m.drug) or anticoagulant_generic(m.quote)
+        if generic is None and names_anticoagulant(f"{m.drug} {m.quote}"):
+            generic = UNSPECIFIED_ANTICOAGULANT  # e.g. "her blood thinner"
         if generic is None:
             # A classification miss (e.g. aspirin), not a grounding failure: doesn't block READY.
             g.drop("anticoag_mention", m.doc_id, m.quote, f"not an anticoagulant: {m.drug}")
+            continue
+        if m.quote.strip() and not names_anticoagulant(m.quote):
+            # The quote isn't about an anticoagulant at all (e.g. a past-history line).
+            # An empty quote is not exempted: it stays unverified and blocks READY.
+            g.drop("anticoag_mention", m.doc_id, m.quote, "quote does not name an anticoagulant")
             continue
         if not g.grounds(m.doc_id, m.quote):
             reason = "unknown doc_id" if m.doc_id not in g.docs else "quote not in document"
@@ -490,6 +549,7 @@ def ground(extraction: CaseExtraction, documents: list[Document]) -> GroundedFac
         anticoag_plans=plans,
         unverified=unverified,
         vital_evidence=vital_evidence,
+        doc_id_repairs=g.doc_id_repairs,
         drops=g.drops,
     )
 
@@ -504,6 +564,7 @@ def sidecar_row(
         **meta,
         "extraction": extraction.model_dump(),
         "vital_evidence": [e.model_dump() for e in grounded.vital_evidence],
+        "doc_id_repairs": [r.model_dump() for r in grounded.doc_id_repairs],
         "drops": [d.model_dump() for d in grounded.drops],
         "drop_count": len(grounded.drops),
         "unverified_count": len(grounded.unverified),

@@ -78,6 +78,9 @@ class VitalReading(BaseModel):
     temp_f: float | None = None
 
 
+UNSPECIFIED_ANTICOAGULANT = "unspecified anticoagulant"
+
+
 class AnticoagEvidence(BaseModel):
     """One statement about an anticoagulant: a med list row or a note mention."""
 
@@ -381,7 +384,11 @@ def check_anticoag(facts: CaseFacts) -> list[Check]:
                 sources=[u.source for u in unverified],
             )
         )
-    for drug in sorted({e.drug for e in facts.anticoag}):
+    drugs = {e.drug for e in facts.anticoag}
+    if len(drugs) > 1:
+        # "Her blood thinner" refers to a named drug when one is known; evaluate that one.
+        drugs.discard(UNSPECIFIED_ANTICOAGULANT)
+    for drug in sorted(drugs):
         rule = f"3 Anticoagulation plan: {drug}"
         evidence = [e for e in facts.anticoag if e.drug == drug]
         sources = [e.source for e in evidence]
