@@ -448,3 +448,17 @@ def test_placeholder_vital_without_values_is_ignored(kind: str) -> None:
     assert grounded.vitals == []
     assert grounded.unverified == []
     assert grounded.drops[0].reason == "no values (placeholder)"
+
+
+def test_misspelled_real_mention_stays_unverified_and_blocks_ready() -> None:
+    # case_00042: the model's quote misspells the drug, so it can't ground. It must not be
+    # released by the name check (fail open); it stays unverified and blocks READY.
+    doc = Document(doc_id="pat", type="Pre-Admission Testing Visit", date="2026-04-10",
+                   text="  - rivaroxaban 20 mg PO daily with evening meal - taking as prescribed")
+    mention = AnticoagMention(doc_id="pat", quote="rivoraxaban 20 mg PO daily with evening meal",
+                              drug="rivaroxaban", status="current")
+    grounded = ground(empty_extraction(anticoagulant_mentions=[mention]), [doc])
+
+    assert grounded.anticoag == []
+    [unverified] = grounded.unverified
+    assert (unverified.kind, unverified.reason) == ("anticoag", "quote not in document")

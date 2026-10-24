@@ -11,6 +11,7 @@ from normalize import (
     anticoagulant_generic,
     celsius_to_fahrenheit,
     names_anticoagulant,
+    near_miss_anticoagulant,
     normalize_lab_code,
     normalize_submission,
     parse_timestamp,
@@ -175,7 +176,24 @@ def test_all_sample_cases_normalize_and_evaluate() -> None:
         ("PMH: Hypertension, Atrial fibrillation.", False),
         ("ASA 81 mg PO daily", False),
         ("", False),
+        # Near-miss spellings (case_00042) count as naming the drug.
+        ("rivoraxaban 20 mg PO daily with evening meal", True),
+        ("Elliquis 5 mg BID", True),
+        ("Coumadine 5 mg daily", True),
+        ("warfrin 5 mg", True),
+        # Ordinary clinical words near a drug name must not.
+        ("High-risk hepatic lobectomy", False),
+        ("tissue fragment sent to pathology", False),
+        ("Patient prefers Spanish, interpreter used", False),
     ],
 )
 def test_names_anticoagulant(text: str, expected: bool) -> None:
     assert names_anticoagulant(text) is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [("rivoraxaban", "rivaroxaban"), ("Elliquis", "eliquis"), ("hepatic", None), ("heparin", "heparin")],
+)
+def test_near_miss_anticoagulant(text: str, expected: str | None) -> None:
+    assert near_miss_anticoagulant(text) == expected

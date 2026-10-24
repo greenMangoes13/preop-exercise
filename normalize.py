@@ -83,11 +83,47 @@ def anticoagulant_generic(name: str | None) -> str | None:
     return None
 
 
+_ANTICOAG_NAMES = sorted({n for g, brands in ANTICOAGULANTS.items() for n in (g, *brands)})
+
+
+def _edit_distance(a: str, b: str) -> int:
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        previous = current
+    return previous[-1]
+
+
+def near_miss_anticoagulant(text: str | None) -> str | None:
+    """A known anticoagulant name the text misspells ("rivoraxaban"), else None.
+
+    Tolerance is 1 edit, or 2 for names of 8+ letters; tighter than that would miss
+    typos, looser would let "hepatic" pass for "heparin".
+    """
+
+    if not text:
+        return None
+    for word in re.findall(r"[a-z]{5,}", text.lower()):
+        for name in _ANTICOAG_NAMES:
+            limit = 2 if len(name) >= 8 else 1
+            if abs(len(word) - len(name)) <= limit and _edit_distance(word, name) <= limit:
+                return name
+    return None
+
+
 def names_anticoagulant(text: str | None) -> bool:
-    """True if the text names an anticoagulant or uses a generic term for one."""
+    """True if the text names an anticoagulant (even misspelled) or uses a generic term.
+
+    Gates which mentions may be dropped without blocking READY, so it errs toward True:
+    a misspelled real mention must stay unverified rather than vanish.
+    """
 
     return bool(text) and (
-        anticoagulant_generic(text) is not None or bool(ANTICOAG_CLASS_PATTERN.search(text))
+        anticoagulant_generic(text) is not None
+        or bool(ANTICOAG_CLASS_PATTERN.search(text))
+        or near_miss_anticoagulant(text) is not None
     )
 
 
