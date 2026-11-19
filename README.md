@@ -1,5 +1,7 @@
 # Pre-Op Triage
 
+This is my solution to a take-home exercise. The starter code, sample data, labels, scoring harness, and report viewer come from [cadencerpm/preop-exercise](https://github.com/cadencerpm/preop-exercise). The `main` branch here is that starter, unchanged. My work is the eight commits on this branch: the pipeline (`normalize.py`, `rules.py`, `extract.py`), the changes to `core.py`, the unit tests for those modules, and [DESIGN.md](DESIGN.md).
+
 ## How to run
 
 If you use Anaconda, run `conda deactivate` first. Anaconda's Brotli 1.0.9 leaks into the uv environment and breaks response decompression in the OpenAI client (`TypeError: process() takes no keyword arguments`). The scripts and test target also pin `brotli>=1.2` for the same reason.
